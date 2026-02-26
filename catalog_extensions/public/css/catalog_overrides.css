@@ -417,6 +417,15 @@ body.ce-mobile-filters-open {
 		padding: 0.35rem 0.35rem 0.5rem;
 	}
 
+	/* Force 2 products per row in grid view on mobile */
+	.item-card-group-section .row.products-list .col-sm-4.item-card,
+	.item-card-group-section .row.products-list .col-sm-3.item-card,
+	.item-card-group-section .row.products-list .item-card {
+		flex: 0 0 50% !important;
+		max-width: 50% !important;
+		width: 50% !important;
+	}
+	
 	.item-card-group-section .item-card .card-img-container {
 		flex: 0 0 60%;
 		width: 100%;
