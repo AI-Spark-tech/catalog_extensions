@@ -22,7 +22,7 @@ frappe.ready(function () {
     }
 
     var wrapper = document.createElement('div');
-    wrapper.className = 'listing-qty-wrapper mt-2';
+    wrapper.className = 'listing-qty-wrapper mt-1';
     wrapper.setAttribute('data-item-code', itemCode);
 
     wrapper.innerHTML = [
@@ -139,11 +139,41 @@ frappe.ready(function () {
       Array.prototype.forEach.call(mutation.addedNodes, function (node) {
         if (!(node instanceof HTMLElement)) return;
         syncExistingInCartCards(node);
+        
+        // Force mobile layout when products are added
+        applyMobileLayoutIfNeeded();
       });
     });
   });
 
   observer.observe(listing, { childList: true, subtree: true });
+
+  // Force mobile layout on initial load and when viewport changes
+  window.applyMobileLayoutIfNeeded = function() {
+    if (window.innerWidth <= 767) {
+      // Target the actual structure: .list-row inside #product-listing
+      const listRows = document.querySelectorAll('#product-listing .list-row');
+      listRows.forEach(function(row) {
+        row.style.display = 'flex';
+        row.style.flexWrap = 'wrap';
+        row.style.gap = '0.05rem';
+        
+        const cols = row.querySelectorAll('[class*="col-"]');
+        cols.forEach(function(col) {
+          col.style.flex = '0 0 50%';
+          col.style.maxWidth = '50%';
+          col.style.paddingLeft = '0.1rem';
+          col.style.paddingRight = '0.1rem';
+        });
+      });
+    }
+  }
+
+  // Apply on load
+  applyMobileLayoutIfNeeded();
+  
+  // Apply on resize
+  window.addEventListener('resize', applyMobileLayoutIfNeeded);
 
   // After the core Add to Cart handler runs, convert the button into qty controls
   listing.addEventListener('click', function (event) {
