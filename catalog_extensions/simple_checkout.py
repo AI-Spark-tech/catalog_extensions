@@ -102,12 +102,60 @@ def _ensure_defaults_on_quotation(quotation, settings):
 		quotation.save()
 
 
+def decorate_quotation_doc(doc):
+	"""Override core decorate_quotation_doc to ensure cart uses the same image as listing.
+
+	Calls core decorate_quotation_doc first to preserve all standard functionality,
+	then overrides the thumbnail field on cart items to use website_image instead of the processed thumbnail.
+	"""
+	# First, let core do its standard decoration
+	decorated = core_cart.decorate_quotation_doc(doc)
+
+	# Then override thumbnail to match listing image (website_image from Website Item)
+	if not decorated or not getattr(decorated, "items", None):
+		return decorated
+
+	for d in decorated.items:
+		if not getattr(d, "item_code", None):
+			continue
+
+		frappe.logger().info(f"[catalog_extensions] Cart item {d.item_code}: decorated website_image={getattr(d, 'website_image', None)}; thumbnail={getattr(d, 'thumbnail', None)}")
+
+		# If core already set a usable thumbnail, keep it
+		if getattr(d, "thumbnail", None):
+			frappe.logger().info(f"[catalog_extensions] Cart item {d.item_code}: using existing thumbnail={d.thumbnail}")
+			continue
+
+		# Prefer website_image from Website Item (matches product listing)
+		website_image = getattr(d, "website_image", None) or frappe.db.get_value(
+			"Website Item",
+			{"item_code": d.item_code},
+			"website_image",
+		)
+		if website_image:
+			d.thumbnail = website_image
+			frappe.logger().info(f"[catalog_extensions] Cart item {d.item_code}: thumbnail set from website_image = {website_image}")
+			continue
+
+		# Fallback: use Item.image for variants or if Website Item missing
+		item_image = frappe.db.get_value("Item", d.item_code, "image")
+		if item_image:
+			d.thumbnail = item_image
+			frappe.logger().info(f"[catalog_extensions] Cart item {d.item_code}: thumbnail set from Item.image = {item_image}")
+			continue
+
+		frappe.logger().warning(f"[catalog_extensions] Cart item {d.item_code}: no image found; thumbnail remains falsy")
+
+	return decorated
+
+
 @frappe.whitelist()
 def get_cart_quotation(doc=None):
 	"""Thin wrapper around core get_cart_quotation.
 
 	When simple checkout is enabled, ensure defaults are applied, then
-	delegate back to core for all heavy logic.
+	delegate back to core for all heavy logic. Image sync is handled by
+	our decorate_quotation_doc override.
 	"""
 	settings = _get_settings()
 
@@ -115,16 +163,18 @@ def get_cart_quotation(doc=None):
 	if not settings or not getattr(settings, "enable_simple_checkout", 0):
 		return core_cart.get_cart_quotation(doc)
 
-	# Start with the standard context from webshop
-	context = core_cart.get_cart_quotation(doc)
-	quotation = context.get("doc")
-
-	if not quotation:
-		return context
+	# When enabled, ensure defaults and then delegate to core.
+	# Our decorate_quotation_doc override will adjust images.
+	party = core_cart.get_party()
+	if not doc:
+		quotation = core_cart._get_cart_quotation(party)
+		core_cart.set_cart_count(quotation)
+	else:
+		quotation = doc
 
 	_ensure_defaults_on_quotation(quotation, settings)
 
-	# Reload context so downstream templates see updated values
+	# Let core return the context; our decorate_quotation_doc override will run automatically
 	return core_cart.get_cart_quotation(doc)
 
 
@@ -169,4 +219,10 @@ def place_order():
 	_ensure_defaults_on_quotation(quotation, settings)
 
 	# Now let core place_order run with a fully-populated quotation
-	return core_cart.place_order()
+	result = core_cart.place_order()
+	
+	# Store the order ID in session for success page
+	if result:
+		frappe.session['last_order_id'] = result
+	
+	return result

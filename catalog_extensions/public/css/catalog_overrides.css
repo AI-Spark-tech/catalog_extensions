@@ -88,6 +88,13 @@
 	display: none !important;
 }
 
+/* Force grid-only product listing: hide list view toggle and list layout */
+.btn-list-view,
+#list,
+#products-list-area {
+	display: none !important;
+}
+
 /* Item badges on listing cards (grid + list) */
 .ce-badges {
 	margin-top: 0.25rem;
@@ -415,6 +422,15 @@ body.ce-mobile-filters-open {
 		min-height: 0;
 		border: 1px solid rgba(17, 24, 39, 0.12);
 		padding: 0.35rem 0.35rem 0.5rem;
+	}
+
+	/* Force 2 products per row in grid view on mobile */
+	.item-card-group-section .row.products-list .col-sm-4.item-card,
+	.item-card-group-section .row.products-list .col-sm-3.item-card,
+	.item-card-group-section .row.products-list .item-card {
+		flex: 0 0 50% !important;
+		max-width: 50% !important;
+		width: 50% !important;
 	}
 
 	.item-card-group-section .item-card .card-img-container {

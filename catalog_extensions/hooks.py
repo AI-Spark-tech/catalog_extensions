@@ -24,6 +24,8 @@ web_include_js = [
     "/assets/catalog_extensions/js/image_zoom_hover.js",
     "/assets/catalog_extensions/js/catalog_search_enter.js",
     "/assets/catalog_extensions/js/simple_checkout.js",
+    "/assets/catalog_extensions/js/force_grid_view.js",
+    "/assets/catalog_extensions/js/order_success_redirect.js",
 ]
 
 # Override core webshop API to inject price range handling while preserving
@@ -32,6 +34,12 @@ override_whitelisted_methods = {
     "webshop.webshop.api.get_product_filter_data": "catalog_extensions.api.get_product_filter_data_with_price",
     "webshop.webshop.shopping_cart.cart.get_cart_quotation": "catalog_extensions.simple_checkout.get_cart_quotation",
     "webshop.webshop.shopping_cart.cart.place_order": "catalog_extensions.simple_checkout.place_order",
+    "webshop.webshop.shopping_cart.cart.decorate_quotation_doc": "catalog_extensions.simple_checkout.decorate_quotation_doc",
+}
+
+# Override core cart_items.html template to prefer website_image over processed thumbnail
+override_doctype_templates = {
+    ("Quotation", "cart_items"): "catalog_extensions/templates/includes/cart/cart_items.html",
 }
 
 # DocType event hooks
