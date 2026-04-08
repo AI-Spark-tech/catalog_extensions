@@ -12,33 +12,48 @@ after_migrate = "catalog_extensions.install.after_migrate"
 # Website assets: load catalog facet sidebar logic and responsive overrides on website pages
 web_include_css = [
     "/assets/catalog_extensions/css/catalog_overrides.css",
-    "/assets/catalog_extensions/css/image_zoom_hover.css",
+    "/assets/catalog_extensions/css/delivery_tracking.css",
 ]
 
 web_include_js = [
-    "/assets/catalog_extensions/js/boot_assets_patch.js",
     "/assets/catalog_extensions/js/catalog_facets.js",
     "/assets/catalog_extensions/js/product_offers.js",
     "/assets/catalog_extensions/js/product_brand.js",
     "/assets/catalog_extensions/js/listing_quantity.js",
+    "/assets/catalog_extensions/js/stock_guard.js",
     "/assets/catalog_extensions/js/badges.js",
-    "/assets/catalog_extensions/js/image_zoom_hover.js",
+    "/assets/catalog_extensions/js/image_zoom_loader.js",
     "/assets/catalog_extensions/js/catalog_search_enter.js",
     "/assets/catalog_extensions/js/simple_checkout.js",
     "/assets/catalog_extensions/js/infinite_scroll.js",
     "/assets/catalog_extensions/js/order_success_redirect.js",
-    "/assets/catalog_extensions/js/diagnostic.js",
     "/assets/catalog_extensions/js/cart_fixes.js",
+    "/assets/catalog_extensions/js/portal_order_receipt.js",
+    "/assets/catalog_extensions/js/delivery_tracking.js",
 
+]
+
+update_website_context = [
+    "catalog_extensions.webshop_listing.update_website_context",
+]
+
+get_print_format_template = [
+    "catalog_extensions.printing.get_print_format_template",
 ]
 
 # Override core webshop API to inject price range handling while preserving
 # existing behavior and URL for get_product_filter_data
 override_whitelisted_methods = {
-    "webshop.webshop.api.get_product_filter_data": "catalog_extensions.api.get_product_filter_data_with_price",
+    "webshop.webshop.api.get_product_filter_data": "catalog_extensions.api.get_products",
+    "webshop.webshop.shopping_cart.product_info.get_product_info_for_website": "catalog_extensions.api.get_product_info",
+    "webshop.templates.pages.product_search.search": "catalog_extensions.api.search_products",
+    "webshop.templates.pages.product_search.product_search": "catalog_extensions.api.product_search",
+    "webshop.templates.pages.product_search.get_product_list": "catalog_extensions.api.get_product_list",
     "webshop.webshop.shopping_cart.cart.get_cart_quotation": "catalog_extensions.simple_checkout.get_cart_quotation",
+    "webshop.webshop.shopping_cart.cart.update_cart": "catalog_extensions.stock_guard.update_cart",
     "webshop.webshop.shopping_cart.cart.place_order": "catalog_extensions.simple_checkout.place_order",
     "webshop.webshop.shopping_cart.cart.decorate_quotation_doc": "catalog_extensions.simple_checkout.decorate_quotation_doc",
+    "erpnext.accounts.doctype.payment_request.payment_request.make_payment_request": "catalog_extensions.simple_checkout.make_payment_request",
 }
 
 # Override core cart_items.html template to prefer website_image over processed thumbnail
@@ -66,6 +81,23 @@ doc_events = {
     "Item Badge": {
         # Sync when Item Badge rows are changed
         "on_update": "catalog_extensions.api.sync_badges_to_filterable_field",
+    },
+    "Customer Group Brand Mapping": {
+        "validate": "catalog_extensions.brand_filtering.validate_customer_group_brand_mapping",
+        "on_update": "catalog_extensions.brand_filtering.clear_customer_group_brand_filter_cache",
+        "after_delete": "catalog_extensions.brand_filtering.clear_customer_group_brand_filter_cache",
+    },
+    "Sales Order": {
+        "on_update_after_submit": "catalog_extensions.order_billing.create_sales_invoice_for_fully_paid_webshop_order",
+    },
+    "Delivery Note": {
+        "on_submit": [
+            "catalog_extensions.order_fulfillment.sync_webshop_shipment_after_delivery_note_submit",
+            "catalog_extensions.api.sync_portal_refund_processing_after_return_receipt",
+        ],
+    },
+    "Shipment": {
+        "validate": "catalog_extensions.order_fulfillment.apply_webshop_shipment_defaults",
     },
 }
 
@@ -107,7 +139,9 @@ doc_events = {
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {
+    "Webshop Simple Checkout Settings": "public/js/webshop_simple_checkout_settings.js",
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -194,7 +228,9 @@ doc_events = {
 # Override standard doctype classes
 
 override_doctype_class = {
-    "Website Item": "catalog_extensions.overrides.website_item.WebsiteItem"
+    "Website Item": "catalog_extensions.overrides.website_item.WebsiteItem",
+    "Item Group": "catalog_extensions.overrides.item_group.WebshopItemGroup",
+    "Payment Request": "catalog_extensions.overrides.payment_request.PaymentRequest",
 }
 
 # Document Events
@@ -298,4 +334,3 @@ scheduler_events = {
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

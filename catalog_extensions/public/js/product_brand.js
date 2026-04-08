@@ -1,24 +1,54 @@
 frappe.ready(function () {
   var maxRetries = 5;
   var retryCount = 0;
+  var brandsCache = {};
+  var inflightRequest = false;
+
+  function getOrCreateMetaRow(card, categoryEl, titleRow) {
+    var existingMetaRow = card.querySelector('.product-meta-row');
+    if (existingMetaRow) {
+      return existingMetaRow;
+    }
+
+    var metaRow = document.createElement('div');
+    metaRow.className = 'product-meta-row';
+
+    if (categoryEl) {
+      categoryEl.classList.add('product-meta-category');
+    }
+
+    if (titleRow && titleRow.parentNode) {
+      titleRow.parentNode.insertBefore(metaRow, titleRow);
+    } else if (categoryEl && categoryEl.parentNode) {
+      categoryEl.parentNode.insertBefore(metaRow, categoryEl);
+    } else {
+      var cardBody = card.querySelector('.card-body');
+      if (!cardBody) {
+        return null;
+      }
+      cardBody.insertBefore(metaRow, cardBody.firstChild);
+    }
+
+    if (categoryEl) {
+      metaRow.appendChild(categoryEl);
+    }
+
+    return metaRow;
+  }
+
+  function normalizeCategoryText(categoryEl) {
+    if (!categoryEl) {
+      return '';
+    }
+
+    var categoryText = (categoryEl.textContent || '').replace(/\s+/g, ' ').trim();
+    categoryEl.textContent = categoryText;
+    return categoryText;
+  }
   
   function injectProductBrands() {
-    console.log('[Brand] Starting brand injection... (attempt ' + (retryCount + 1) + ')');
     var listing = document.getElementById('product-listing');
     if (!listing) {
-      console.log('[Brand] No product-listing element found');
-      retryCount++;
-      if (retryCount < maxRetries) {
-        console.log('[Brand] Retrying in 500ms...');
-        setTimeout(injectProductBrands, 500);
-      }
-      return;
-    }
-    console.log('[Brand] Found product-listing element');
-
-    var itemCodeEls = listing.querySelectorAll('[data-item-code]');
-    console.log('[Brand] Found ' + itemCodeEls.length + ' elements with data-item-code');
-    if (!itemCodeEls.length) {
       retryCount++;
       if (retryCount < maxRetries) {
         setTimeout(injectProductBrands, 500);
@@ -26,99 +56,106 @@ frappe.ready(function () {
       return;
     }
 
+    // Only process cards that haven't been processed yet
+    var cards = listing.querySelectorAll('.item-card');
+    var unprocessedCards = Array.prototype.filter.call(cards, function (card) {
+      return !card.hasAttribute('data-brand-injected');
+    });
+
+    if (!unprocessedCards.length) {
+      return;
+    }
+
+    // Collect item codes from unprocessed cards
     var codesSet = new Set();
-    itemCodeEls.forEach(function (el) {
-      var code = el.getAttribute('data-item-code');
+    unprocessedCards.forEach(function (card) {
+      var codeEl = card.querySelector('[data-item-code]');
+      if (!codeEl) return;
+      var code = codeEl.getAttribute('data-item-code');
       if (code) codesSet.add(code);
     });
+
     var itemCodes = Array.from(codesSet);
-    console.log('[Brand] Unique item codes:', itemCodes);
-    if (!itemCodes.length) return;
+    if (!itemCodes.length) {
+      retryCount++;
+      if (retryCount < maxRetries) {
+        setTimeout(injectProductBrands, 500);
+      }
+      return;
+    }
+
+    // If we already have cache for all codes, inject directly without an API call
+    var missingCodes = itemCodes.filter(function (c) { return !brandsCache[c]; });
+    function applyBrands() {
+      unprocessedCards.forEach(function (card) {
+        var codeEl = card.querySelector('[data-item-code]');
+        var code = codeEl ? codeEl.getAttribute('data-item-code') : null;
+        if (!code) return;
+        var brand = brandsCache[code];
+        if (!brand) return;
+
+        var nameEl = card.querySelector('.product-title');
+        var titleLink = nameEl ? nameEl.closest('a') : null;
+        var titleRow = titleLink ? titleLink.parentNode : null;
+        var categoryEl = card.querySelector('.product-category');
+        var categoryText = normalizeCategoryText(categoryEl);
+        var metaRow = getOrCreateMetaRow(card, categoryEl, titleRow);
+        if (!metaRow) return;
+
+        var brandDiv = metaRow.querySelector('.brand-container');
+        if (!brandDiv) {
+          brandDiv = document.createElement('div');
+          brandDiv.className = 'brand-container mb-1';
+          metaRow.insertBefore(brandDiv, metaRow.firstChild);
+        }
+        brandDiv.innerHTML = '<span class="brand-badge">' + __(brand) + '</span>';
+
+        var separator = metaRow.querySelector('.product-meta-separator');
+        if (categoryText) {
+          if (!separator) {
+            separator = document.createElement('span');
+            separator.className = 'product-meta-separator';
+            separator.textContent = '•';
+          }
+          if (brandDiv.nextSibling !== separator) {
+            metaRow.insertBefore(separator, categoryEl || null);
+          }
+          if (categoryEl) {
+            categoryEl.textContent = categoryText;
+          }
+        } else if (separator) {
+          separator.remove();
+        }
+
+        card.setAttribute('data-brand-injected', '1');
+      });
+    }
+
+    if (!missingCodes.length) {
+      applyBrands();
+      return;
+    }
+
+    if (inflightRequest) {
+      return;
+    }
+
+    inflightRequest = true;
 
     frappe.call({
       method: 'catalog_extensions.api.get_item_brands',
-      args: { item_codes: itemCodes },
+      args: { item_codes: missingCodes },
       callback: function (r) {
-        console.log('[Brand] API response:', r.message);
-        if (!r.message) {
-          console.log('[Brand] No response from API');
-          return;
-        }
-        var brandsByCode = r.message;
-
-        itemCodes.forEach(function (code) {
-          var brand = brandsByCode[code];
-          console.log('[Brand] Code:', code, 'Brand:', brand);
-          if (!brand) return;
-
-          // Find every card instance with this item code
-          var targets = listing.querySelectorAll('[data-item-code="' + code + '"]');
-          console.log('[Brand] Found ' + targets.length + ' cards for code ' + code);
-          targets.forEach(function (el) {
-            // In some list templates, [data-item-code] is on a button nested deep.
-            // Normalize to a stable anchor first.
-            var anchor = el.closest('[data-item-code]') || el;
-            var card = null;
-            // Prefer the item wrapper that infinite scroll uses.
-            card = anchor.closest('.item-card');
-            // Fallbacks for legacy templates
-            if (!card) card = anchor.closest('.card');
-            if (!card) card = anchor.closest('.col-12, .col-sm-4, .col-md-3, [class*="col-"]');
-            if (!card) {
-              console.log('[Brand] No card found for element', el);
-              return;
-            }
-
-            // Avoid duplicate injection
-            if (card.querySelector('.brand-container')) {
-              console.log('[Brand] Brand already injected for this card');
-              return;
-            }
-
-            // Find the product title element
-            var nameEl = card.querySelector('.product-title');
-            console.log('[Brand] Product title element:', nameEl ? 'found: ' + nameEl.textContent.trim().substr(0,30) : 'not found');
-            
-            var insertPoint = null;
-            if (nameEl) {
-              // Find the flex container that holds the title (parent of the <a> tag)
-              var titleLink = nameEl.closest('a');
-              if (titleLink) {
-                var flexContainer = titleLink.parentNode; // This is the <div style="display: flex">
-                if (flexContainer) {
-                  insertPoint = flexContainer.parentNode; // This is the card-body or similar
-                  // We'll insert before the flex container
-                  insertPoint = { parent: insertPoint, before: flexContainer };
-                }
-              }
-            }
-            
-            // Fallback: if we can't find the right structure, just put it in card-body
-            if (!insertPoint) {
-              var cardBody = card.querySelector('.card-body');
-              if (cardBody) {
-                insertPoint = { parent: cardBody, before: cardBody.firstChild };
-              }
-            }
-            
-            if (!insertPoint) {
-              console.log('[Brand] Cannot find insertion point, skipping');
-              return;
-            }
-
-            var brandDiv = document.createElement('div');
-            brandDiv.className = 'brand-container mb-1';
-            // Amazon-style: small, uppercase, gray brand above title
-            brandDiv.innerHTML = '<span class="brand-badge" style="font-size: 0.7rem; color: var(--gray-700); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; line-height: 1.2;">' + 
-              __(brand) + '</span>';
-
-            // Insert at the correct position
-            insertPoint.parent.insertBefore(brandDiv, insertPoint.before);
-            console.log('[Brand] Brand injected for', code);
+        inflightRequest = false;
+        if (r && r.message) {
+          Object.keys(r.message).forEach(function (code) {
+            brandsCache[code] = r.message[code];
           });
-        });
+        }
+        applyBrands();
       },
       error: function(err) {
+        inflightRequest = false;
         console.error('[Brand] API error:', err);
       }
     });
@@ -144,7 +181,7 @@ frappe.ready(function () {
     var observer = new MutationObserver(function () {
       // Debounce rapid DOM changes into a single inject call
       if (timeoutId) clearTimeout(timeoutId);
-      timeoutId = setTimeout(injectProductBrands, 200);
+      timeoutId = setTimeout(injectProductBrands, 600);
     });
 
     observer.observe(listing, { childList: true, subtree: true });

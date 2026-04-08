@@ -8,10 +8,16 @@
 (function() {
     'use strict';
 
+    var initAttempts = 0;
+    var maxInitAttempts = 40;
+
     function init() {
+        initAttempts++;
         if (typeof frappe === 'undefined' || typeof window.webshop === 'undefined' || !window.webshop.ProductView) {
-            // Wait until core JS is loaded
-            setTimeout(init, 100);
+            // Wait until core JS is loaded, but stop retrying after a bounded window.
+            if (initAttempts < maxInitAttempts) {
+                setTimeout(init, 100);
+            }
             return;
         }
 

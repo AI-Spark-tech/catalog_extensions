@@ -40,7 +40,7 @@ function buildQueryKeyFromUrl() {
 
 function resetStateFromDom(state) {
 	const nextKey = buildQueryKeyFromUrl();
-	if (nextKey && state.lastQueryKey === nextKey) return;
+	if (state.lastQueryKey === nextKey) return;
 
 	state.isLoading = false;
 	state.hasMore = true;
@@ -73,13 +73,20 @@ frappe.ready(() => {
 });
 
 function initInfiniteScroll() {
+	if (window.__catalogExtensionsInfiniteScrollInitialized) {
+		return;
+	}
+	window.__catalogExtensionsInfiniteScrollInitialized = true;
+
 	const state = {
 		isLoading: false,
 		hasMore: true,
 		start: 0,
 		loadedItemCodes: new Set(), // Track which items we've already loaded
 		pageLength: null,
-		lastQueryKey: ''
+		lastQueryKey: '',
+		lastLoadAt: 0,
+		minLoadIntervalMs: 900
 	};
 
 	// Count initial products and track their item codes
@@ -106,6 +113,18 @@ function initInfiniteScroll() {
 			handleScroll(state);
 		}, 200);
 	});
+
+	// If the listing DOM is replaced (common on filter/sort actions), re-sync state.
+	// This avoids cases where state.start points past available items (or resets incorrectly).
+	const listingRoot = document.getElementById('product-listing');
+	if (listingRoot && window.MutationObserver) {
+		let resetTimer = null;
+		const listingObserver = new MutationObserver(() => {
+			if (resetTimer) window.clearTimeout(resetTimer);
+			resetTimer = window.setTimeout(() => resetStateFromDom(state), 350);
+		});
+		listingObserver.observe(listingRoot, { childList: true, subtree: true });
+	}
 
 	// Reset infinite scroll state when URL changes (filters/sort/search)
 	window.addEventListener('popstate', () => resetStateFromDom(state));
@@ -139,6 +158,11 @@ function initInfiniteScroll() {
 			}, 100);
 		}
 	});
+
+	// If the first page is shorter than the viewport, start loading immediately.
+	setTimeout(() => {
+		handleScroll(state);
+	}, 250);
 }
 
 function handleScroll(state) {
@@ -146,8 +170,20 @@ function handleScroll(state) {
 		return;
 	}
 
+	// Prevent rapid re-triggers when the page is short or append changes scrollHeight.
+	const now = Date.now();
+	if (state.lastLoadAt && now - state.lastLoadAt < state.minLoadIntervalMs) {
+		return;
+	}
+
 	const scrollPosition = window.innerHeight + window.scrollY;
-	const threshold = document.documentElement.scrollHeight - 300;
+	const documentHeight = Math.max(
+		document.body.scrollHeight,
+		document.documentElement.scrollHeight,
+		document.body.offsetHeight,
+		document.documentElement.offsetHeight
+	);
+	const threshold = documentHeight - 300;
 
 	if (scrollPosition >= threshold) {
 		console.log('📜 Scroll threshold reached, loading more...');
@@ -157,6 +193,7 @@ function handleScroll(state) {
 
 function loadMore(state) {
 	state.isLoading = true;
+	state.lastLoadAt = Date.now();
 	showLoading();
 
 	// Get current filters from URL and page
@@ -203,8 +240,16 @@ function loadMore(state) {
 
 				console.log('✨ Unique new items:', uniqueNewItems.length);
 
-				// Append products to BOTH views
-				if (uniqueNewItems.length > 0) {
+				// If the API keeps returning the same page, we may get 0 unique items.
+				// In that case, stop infinite scroll to prevent a continuous network loop.
+				if (uniqueNewItems.length === 0) {
+					state.hasMore = false;
+					showEndMessage();
+					console.log('🏁 No new unique products; stopping infinite scroll');
+					state.isLoading = false;
+					return;
+				} else {
+					// Append products to BOTH views
 					appendProducts(uniqueNewItems);
 				}
 				
@@ -226,6 +271,7 @@ function loadMore(state) {
 			}
 			
 			state.isLoading = false;
+			queueBottomCheck(state);
 		},
 		error: (err) => {
 			console.error('❌ Error loading products:', err);
@@ -234,6 +280,12 @@ function loadMore(state) {
 			showError();
 		}
 	});
+}
+
+function queueBottomCheck(state) {
+	window.setTimeout(() => {
+		handleScroll(state);
+	}, state.minLoadIntervalMs);
 }
 
 function getCurrentFilters() {

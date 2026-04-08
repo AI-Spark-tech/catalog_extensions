@@ -15,37 +15,22 @@
 .success-card {
     background: white;
     border-radius: 20px;
-    padding: 60px 40px;
+    padding: 52px 40px;
     text-align: center;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     max-width: 500px;
     width: 100%;
     position: relative;
     overflow: hidden;
-}
-
-.success-card::before {
-    content: '';
-    position: absolute;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
-    background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-    transform: rotate(45deg);
-    animation: shimmer 3s infinite;
-}
-
-@keyframes shimmer {
-    0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
-    100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+    animation: cardRise 0.7s ease-out forwards;
 }
 
 .success-icon {
-    width: 100px;
-    height: 100px;
-    margin: 0 auto 30px;
+    width: 88px;
+    height: 88px;
+    margin: 0 auto 24px;
     position: relative;
+    animation: iconPop 0.7s ease-out 0.2s both;
 }
 
 .success-icon svg {
@@ -78,7 +63,7 @@
 }
 
 .success-title {
-    font-size: 2.5rem;
+    font-size: 2.2rem;
     color: #2d3748;
     margin-bottom: 15px;
     font-weight: 700;
@@ -87,7 +72,7 @@
 }
 
 .success-message {
-    font-size: 1.2rem;
+    font-size: 1.05rem;
     color: #718096;
     margin-bottom: 30px;
     line-height: 1.6;
@@ -121,6 +106,14 @@
     flex-wrap: wrap;
     opacity: 0;
     animation: fadeInUp 0.8s ease-out 1.8s forwards;
+}
+
+.redirect-note {
+    margin-top: 18px;
+    color: #718096;
+    font-size: 0.95rem;
+    opacity: 0;
+    animation: fadeInUp 0.8s ease-out 2s forwards;
 }
 
 .btn {
@@ -157,36 +150,6 @@
     transform: translateY(-2px);
 }
 
-.confetti {
-    position: absolute;
-    width: 10px;
-    height: 10px;
-    background: #667eea;
-    position: absolute;
-    animation: confetti-fall 3s linear infinite;
-}
-
-.confetti:nth-child(1) { left: 10%; animation-delay: 0s; background: #667eea; }
-.confetti:nth-child(2) { left: 20%; animation-delay: 0.5s; background: #764ba2; }
-.confetti:nth-child(3) { left: 30%; animation-delay: 1s; background: #f687b3; }
-.confetti:nth-child(4) { left: 40%; animation-delay: 1.5s; background: #fbb6ce; }
-.confetti:nth-child(5) { left: 50%; animation-delay: 2s; background: #667eea; }
-.confetti:nth-child(6) { left: 60%; animation-delay: 2.5s; background: #764ba2; }
-.confetti:nth-child(7) { left: 70%; animation-delay: 0.3s; background: #f687b3; }
-.confetti:nth-child(8) { left: 80%; animation-delay: 0.8s; background: #fbb6ce; }
-.confetti:nth-child(9) { left: 90%; animation-delay: 1.3s; background: #667eea; }
-
-@keyframes confetti-fall {
-    0% {
-        transform: translateY(-100vh) rotate(0deg);
-        opacity: 1;
-    }
-    100% {
-        transform: translateY(100vh) rotate(720deg);
-        opacity: 0;
-    }
-}
-
 @keyframes fadeInUp {
     from {
         opacity: 0;
@@ -198,14 +161,26 @@
     }
 }
 
-.pulse {
-    animation: pulse 2s infinite;
+@keyframes cardRise {
+    from {
+        opacity: 0;
+        transform: translateY(18px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
-@keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-    100% { transform: scale(1); }
+@keyframes iconPop {
+    0% {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
 }
 
 @media (max-width: 768px) {
@@ -237,17 +212,6 @@
 
 {% block page_content %}
 <div class="success-container">
-    <!-- Confetti Animation -->
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    <div class="confetti"></div>
-    
     <div class="success-card">
         <div class="success-icon">
             <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -278,7 +242,7 @@
         </div>
         
         <div class="action-buttons">
-            <a href="/orders" class="btn btn-primary pulse">
+            <a href="/orders" class="btn btn-primary">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M9 11l3 3L22 4"></path>
                     <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"></path>
@@ -293,18 +257,15 @@
                 Continue Shopping
             </a>
         </div>
+
+        <p class="redirect-note">
+            Redirecting to your orders in <strong id="redirect-countdown">10</strong> seconds.
+        </p>
     </div>
 </div>
 
 <script>
-// Auto-redirect to orders after 10 seconds
-setTimeout(function() {
-    window.location.href = '/orders';
-}, 10000);
-
-// Add some interactive effects
 document.addEventListener('DOMContentLoaded', function() {
-    // Add hover sound effect (optional)
     const buttons = document.querySelectorAll('.btn');
     buttons.forEach(button => {
         button.addEventListener('mouseenter', function() {
@@ -315,41 +276,22 @@ document.addEventListener('DOMContentLoaded', function() {
             this.style.transform = 'translateY(0) scale(1)';
         });
     });
-    
-    // Create floating particles effect
-    function createParticle() {
-        const particle = document.createElement('div');
-        particle.style.position = 'absolute';
-        particle.style.width = '4px';
-        particle.style.height = '4px';
-        particle.style.background = '#667eea';
-        particle.style.borderRadius = '50%';
-        particle.style.pointerEvents = 'none';
-        particle.style.opacity = '0.6';
-        
-        const startX = Math.random() * window.innerWidth;
-        const startY = window.innerHeight;
-        
-        particle.style.left = startX + 'px';
-        particle.style.top = startY + 'px';
-        
-        document.body.appendChild(particle);
-        
-        const duration = 3000 + Math.random() * 2000;
-        const endY = -100;
-        const horizontalMovement = (Math.random() - 0.5) * 100;
-        
-        particle.animate([
-            { transform: 'translate(0, 0) scale(1)', opacity: 0.6 },
-            { transform: `translate(${horizontalMovement}px, ${endY}px) scale(0.5)`, opacity: 0 }
-        ], {
-            duration: duration,
-            easing: 'ease-out'
-        }).onfinish = () => particle.remove();
-    }
-    
-    // Create particles periodically
-    setInterval(createParticle, 300);
+
+    const countdownNode = document.getElementById('redirect-countdown');
+    let secondsRemaining = 10;
+
+    const redirectTimer = window.setInterval(function() {
+        secondsRemaining -= 1;
+
+        if (countdownNode && secondsRemaining >= 0) {
+            countdownNode.textContent = String(secondsRemaining);
+        }
+
+        if (secondsRemaining <= 0) {
+            window.clearInterval(redirectTimer);
+            window.location.replace('/orders');
+        }
+    }, 1000);
 });
 </script>
 {% endblock %}

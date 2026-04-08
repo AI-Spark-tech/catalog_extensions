@@ -2,6 +2,8 @@ import frappe
 import os
 import sys
 
+from catalog_extensions.printing import ensure_order_receipt_print_format
+
 
 def _import_setup_modules():
     """Import setup modules from deploy/ directory (at app root, not inside package)."""
@@ -42,6 +44,9 @@ def _run_setup():
 
     # Create performance indexes for custom filter queries
     setup_custom_fields.setup_performance_indexes(frappe)
+
+    # Ensure portal-only customer receipt print format exists
+    ensure_order_receipt_print_format()
 
 
 def after_install():

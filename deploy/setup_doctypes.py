@@ -132,9 +132,57 @@ def create_webshop_simple_checkout_settings_doctype(frappe):
 
 	doctype_name = "Webshop Simple Checkout Settings"
 	module = "Catalog Extensions"
+	field_definitions = [
+		{
+			"fieldname": "enable_simple_checkout",
+			"label": "Enable Simple Checkout",
+			"fieldtype": "Check",
+			"default": "0",
+		},
+		{
+			"fieldname": "hide_shipping_on_webshop",
+			"label": "Hide Shipping on Webshop",
+			"fieldtype": "Check",
+			"default": "0",
+		},
+		{
+			"fieldname": "hide_payment_on_webshop",
+			"label": "Hide Payment on Webshop",
+			"fieldtype": "Check",
+			"default": "0",
+		},
+		{
+			"fieldname": "default_shipping_address_type",
+			"label": "Default Shipping Address Type",
+			"fieldtype": "Select",
+			"options": "Shipping\nBilling\nPrimary",
+			"default": "Shipping",
+		},
+		{
+			"fieldname": "default_payment_term_template",
+			"label": "Default Payment Terms Template",
+			"fieldtype": "Link",
+			"options": "Payment Terms Template",
+		},
+	]
 
 	if frappe.db.exists("DocType", doctype_name):
 		print(f"[INFO] DocType '{doctype_name}' already exists")
+		doctype = frappe.get_doc("DocType", doctype_name)
+		existing_fieldnames = {field.fieldname for field in doctype.fields or []}
+		fields_added = False
+
+		for field_def in field_definitions:
+			if field_def["fieldname"] in existing_fieldnames:
+				continue
+			doctype.append("fields", field_def)
+			fields_added = True
+
+		if fields_added:
+			doctype.save(ignore_permissions=True)
+			frappe.db.commit()
+			print(f"[SUCCESS] Added missing fields to '{doctype_name}'")
+
 		return True
 
 	print(f"[STEP] Creating DocType: {doctype_name}...")
@@ -147,39 +195,7 @@ def create_webshop_simple_checkout_settings_doctype(frappe):
 				"module": module,
 				"custom": 1,
 				"issingle": 1,
-				"fields": [
-					{
-						"fieldname": "enable_simple_checkout",
-						"label": "Enable Simple Checkout",
-						"fieldtype": "Check",
-						"default": "0",
-					},
-					{
-						"fieldname": "hide_shipping_on_webshop",
-						"label": "Hide Shipping on Webshop",
-						"fieldtype": "Check",
-						"default": "0",
-					},
-					{
-						"fieldname": "hide_payment_on_webshop",
-						"label": "Hide Payment on Webshop",
-						"fieldtype": "Check",
-						"default": "0",
-					},
-					{
-						"fieldname": "default_shipping_address_type",
-						"label": "Default Shipping Address Type",
-						"fieldtype": "Select",
-						"options": "Shipping\nBilling\nPrimary",
-						"default": "Shipping",
-					},
-					{
-						"fieldname": "default_payment_term_template",
-						"label": "Default Payment Terms Template",
-						"fieldtype": "Link",
-						"options": "Payment Terms Template",
-					},
-				],
+				"fields": field_definitions,
 				"permissions": [
 					{
 						"role": "System Manager",
@@ -208,6 +224,103 @@ def create_webshop_simple_checkout_settings_doctype(frappe):
 	except Exception as e:
 		print(f"[ERROR] Failed to create DocType '{doctype_name}': {e}")
 		return False
+
+
+def create_customer_group_brand_mapping_doctype(frappe):
+    """Create the customer-group to brand mapping DocType if it doesn't exist."""
+
+    doctype_name = "Customer Group Brand Mapping"
+    module = "Catalog Extensions"
+    field_definitions = [
+        {
+            "fieldname": "customer_group",
+            "label": "Customer Group",
+            "fieldtype": "Link",
+            "options": "Customer Group",
+            "reqd": 1,
+            "in_list_view": 1,
+            "link_filters": '[["Customer Group", "is_group", "=", 0]]',
+        },
+        {
+            "fieldname": "brand",
+            "label": "Brand",
+            "fieldtype": "Link",
+            "options": "Brand",
+            "reqd": 1,
+            "in_list_view": 1,
+        },
+        {
+            "fieldname": "enabled",
+            "label": "Enabled",
+            "fieldtype": "Check",
+            "default": "1",
+            "in_list_view": 1,
+        },
+    ]
+
+    if frappe.db.exists("DocType", doctype_name):
+        print(f"[INFO] DocType '{doctype_name}' already exists")
+        doctype = frappe.get_doc("DocType", doctype_name)
+        existing_fieldnames = {field.fieldname for field in doctype.fields or []}
+        fields_added = False
+
+        for field_def in field_definitions:
+            if field_def["fieldname"] in existing_fieldnames:
+                continue
+            doctype.append("fields", field_def)
+            fields_added = True
+
+        if fields_added:
+            doctype.save(ignore_permissions=True)
+            frappe.db.commit()
+            print(f"[SUCCESS] Added missing fields to '{doctype_name}'")
+
+        return True
+
+    print(f"[STEP] Creating DocType: {doctype_name}...")
+
+    try:
+        doc = frappe.get_doc(
+            {
+                "doctype": "DocType",
+                "name": doctype_name,
+                "module": module,
+                "custom": 1,
+                "autoname": "hash",
+                "title_field": "customer_group",
+                "fields": field_definitions,
+                "permissions": [
+                    {
+                        "role": "System Manager",
+                        "read": 1,
+                        "write": 1,
+                        "create": 1,
+                        "delete": 1,
+                    },
+                    {
+                        "role": "Website Manager",
+                        "read": 1,
+                        "write": 1,
+                        "create": 1,
+                        "delete": 1,
+                    },
+                ],
+                "track_changes": 1,
+                "sort_field": "modified",
+                "sort_order": "DESC",
+                "engine": "InnoDB",
+            }
+        )
+
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+
+        print(f"[SUCCESS] DocType '{doctype_name}' created successfully")
+        return True
+
+    except Exception as e:
+        print(f"[ERROR] Failed to create DocType '{doctype_name}': {e}")
+        return False
 
 
 def create_default_price_ranges(frappe):
@@ -272,6 +385,7 @@ def main():
                 sys.exit(1)
             create_default_price_ranges(frappe)
             create_webshop_simple_checkout_settings_doctype(frappe)
+            create_customer_group_brand_mapping_doctype(frappe)
 
             print("=" * 60)
             print("[COMPLETE] DocType setup finished!")

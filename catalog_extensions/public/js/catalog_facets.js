@@ -1,6 +1,9 @@
 // Catalog facet sidebar logic (lives in custom app, usable across themes/pages)
 
 document.addEventListener("DOMContentLoaded", () => {
+  if (window.__catalogFacetsInitialized) return;
+  window.__catalogFacetsInitialized = true;
+
   // Only run if frappe is available
   if (typeof frappe === "undefined" || !frappe.call) return;
 
@@ -14,12 +17,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Work with vanilla webshop templates: if our facet containers are not
     // present in the core HTML, create them inside the existing filters
     // sidebar so we don't need to touch core templates.
-    const filtersSidebar =
-      document.getElementById("product-filters") ||
-      document.querySelector(".filters-section") ||
-      document.querySelector(".webshop-filters") ||
-      document.querySelector(".item-filters") ||
-      document.querySelector("[data-filters-section]");
+    const filtersSidebar = getFiltersSidebar();
 
     if (!filtersSidebar && attempts < maxAttempts) {
       // Retry if sidebar not found yet
@@ -64,6 +62,10 @@ document.addEventListener("DOMContentLoaded", () => {
       // Match webshop filter-block styling
       div.className = "mb-4 filter-block pb-5";
 
+      const titleSection =
+        filtersSidebar.querySelector(".title-section") ||
+        filtersSidebar.querySelector(".filters-header");
+
       // Preferred placement: directly after the last field filter block
       if (lastFieldFilterBlock && lastFieldFilterBlock.parentNode) {
         lastFieldFilterBlock.parentNode.insertBefore(div, lastFieldFilterBlock.nextSibling);
@@ -73,14 +75,18 @@ document.addEventListener("DOMContentLoaded", () => {
         firstAttributeBlock.parentNode.insertBefore(div, firstAttributeBlock);
       } else {
         // Final fallback: after static filters title/header, or at top
-        const header =
-          filtersSidebar.querySelector(".filters-title") ||
-          filtersSidebar.querySelector(".filter-section-title") ||
-          null;
-        if (header && header.parentNode) {
-          header.parentNode.insertBefore(div, header.nextSibling);
+        if (titleSection && titleSection.parentNode) {
+          titleSection.parentNode.insertBefore(div, titleSection.nextSibling);
         } else {
-          filtersSidebar.insertBefore(div, filtersSidebar.firstChild);
+          const header =
+            filtersSidebar.querySelector(".filters-title") ||
+            filtersSidebar.querySelector(".filter-section-title") ||
+            null;
+          if (header && header.parentNode) {
+            header.parentNode.insertBefore(div, header.nextSibling);
+          } else {
+            filtersSidebar.insertBefore(div, filtersSidebar.firstChild);
+          }
         }
       }
     };
@@ -90,18 +96,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const facetIds = ["facet-badges", "facet-offers", "facet-price-ranges"];
     facetIds.forEach((id) => ensureFacetContainer(id));
 
-    // Detect if we're on an item group page
-    const itemGroupEl = document.querySelector('[data-item-group]');
-    const itemGroup = itemGroupEl ? itemGroupEl.getAttribute('data-item-group') : null;
+    const queryArgs = getListingQueryArgs();
 
     frappe.call({
       method: "catalog_extensions.api.get_filter_facets",
-      args: itemGroup ? { item_group: itemGroup } : {},
+      args: { query_args: JSON.stringify(queryArgs) },
       callback: (r) => {
         const facets = r && r.message;
         if (!facets) return;
 
-        // Cache facets globally so mobile clone can re-render with bindings
+        // Cache facets globally for any future listing refresh hooks
         window.__catalogFacetsData = facets;
 
         // Render price range slider integrated with webshop filters.
@@ -121,8 +125,8 @@ document.addEventListener("DOMContentLoaded", () => {
         // Inject counts into core webshop filters (Brand, Item Group)
         injectCountsIntoCoreFilters(facets.brands || [], facets.item_groups || []);
 
-        // After all facets are rendered, set up the mobile off-canvas UI
-        setupMobileOffCanvasFilters();
+        // After all facets are rendered, set up the shared mobile off-canvas UI
+        setupMobileFiltersUI();
       },
     });
   }
@@ -131,18 +135,37 @@ document.addEventListener("DOMContentLoaded", () => {
   initFacets();
 });
 
-function setupMobileOffCanvasFilters() {
-  // Use a single shared filters DOM; only enable off-canvas on small screens
-  if (window.innerWidth >= 768) {
-    return;
+function getFiltersSidebar() {
+  return (
+    document.getElementById("product-filters") ||
+    document.querySelector(".filters-section") ||
+    document.querySelector(".webshop-filters") ||
+    document.querySelector(".item-filters") ||
+    document.querySelector("[data-filters-section]")
+  );
+}
+
+function getListingQueryArgs() {
+  const queryArgs = frappe.utils.get_query_params() || {};
+  const itemGroupEl = document.querySelector("[data-item-group]");
+  const itemGroup = itemGroupEl ? itemGroupEl.getAttribute("data-item-group") : null;
+
+  if (itemGroup && !queryArgs.item_group) {
+    queryArgs.item_group = itemGroup;
   }
 
+  return queryArgs;
+}
+
+function setupMobileFiltersUI() {
   const filtersContainer = document.getElementById("product-filters");
   if (!filtersContainer) return;
 
+  filtersContainer.classList.remove("collapse");
+  filtersContainer.classList.add("offcanvas-filters");
+
   const parent = filtersContainer.parentElement;
   if (parent && !parent.querySelector(".mobile-filters-toggle")) {
-    // Toggle button to open off-canvas
     const toggleBtn = document.createElement("button");
     toggleBtn.type = "button";
     toggleBtn.className = "btn btn-outline-primary d-md-none mb-3 w-100 mobile-filters-toggle";
@@ -152,51 +175,136 @@ function setupMobileOffCanvasFilters() {
       </svg>
       Filters
     `;
-    toggleBtn.addEventListener("click", () => {
-      document.body.classList.add("ce-mobile-filters-open");
-    });
+    toggleBtn.addEventListener("click", openMobileFilters);
     parent.insertBefore(toggleBtn, filtersContainer);
   }
 
-  // Create off-canvas overlay and sidebar
-  const overlay = document.createElement("div");
-  overlay.className = "ce-mobile-filters-overlay";
-  overlay.addEventListener("click", () => {
-    document.body.classList.remove("ce-mobile-filters-open");
-  });
+  let overlay = document.querySelector(".ce-mobile-filters-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "ce-mobile-filters-overlay";
+    overlay.addEventListener("click", closeMobileFilters);
+    document.body.appendChild(overlay);
+  }
 
-  const sidebar = document.createElement("div");
-  sidebar.className = "ce-mobile-filters-sidebar";
-  sidebar.innerHTML = `
-    <div class="ce-mobile-filters-header">
-      <button class="ce-mobile-filters-close btn btn-link">
+  if (!filtersContainer.querySelector(".ce-mobile-filters-header")) {
+    const clearFiltersLink = filtersContainer.querySelector(".clear-filters");
+    const clearFiltersHref = clearFiltersLink ? clearFiltersLink.getAttribute("href") || "#" : "#";
+    const mobileHeader = document.createElement("div");
+    mobileHeader.className = "ce-mobile-filters-header d-md-none";
+    mobileHeader.innerHTML = `
+      <button type="button" class="ce-mobile-filters-close btn btn-link">
         <svg class="icon icon-md" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
       <h5 class="mb-0">Filters</h5>
-    </div>
-    <div class="ce-mobile-filters-body">
-      <!-- Move original filters content here -->
-    </div>
-  `;
+      <a class="ce-mobile-clear-filters" href="${clearFiltersHref}">Clear</a>
+    `;
+    filtersContainer.insertBefore(mobileHeader, filtersContainer.firstChild);
+    mobileHeader
+      .querySelector(".ce-mobile-filters-close")
+      .addEventListener("click", closeMobileFilters);
+  }
 
-  // Move the existing filters container into the off-canvas sidebar body so
-  // there is only a single source of truth for filters (no cloning).
-  const sidebarBody = sidebar.querySelector(".ce-mobile-filters-body");
+  window.addEventListener("resize", syncMobileFiltersState, { passive: true });
+  document.addEventListener("keydown", handleMobileFiltersEscape);
+  document.addEventListener("change", handleFilterChangeCloseMobile);
+  syncMobileFiltersState();
+}
 
-  filtersContainer.classList.remove("collapse", "d-md-block", "mr-4");
-  filtersContainer.classList.add("offcanvas-filters");
-  sidebarBody.appendChild(filtersContainer);
+function openMobileFilters() {
+  if (window.innerWidth >= 768) return;
+  document.body.classList.add("ce-mobile-filters-open");
+}
 
-  // Append overlay and sidebar to body (only visible on mobile)
-  document.body.appendChild(overlay);
-  document.body.appendChild(sidebar);
+function closeMobileFilters() {
+  document.body.classList.remove("ce-mobile-filters-open");
+}
 
-  // Close button inside sidebar
-  sidebar.querySelector(".ce-mobile-filters-close").addEventListener("click", () => {
-    document.body.classList.remove("ce-mobile-filters-open");
+function syncMobileFiltersState() {
+  if (window.innerWidth >= 768) {
+    closeMobileFilters();
+  }
+}
+
+function handleMobileFiltersEscape(event) {
+  if (event.key === "Escape") {
+    closeMobileFilters();
+  }
+}
+
+function handleFilterChangeCloseMobile(event) {
+  if (!event.target.closest("#product-filters")) return;
+  if (window.innerWidth < 768) {
+    window.setTimeout(closeMobileFilters, 120);
+  }
+}
+
+function updateFieldFiltersInUrl(updater) {
+  const url = new URL(window.location.href);
+  const search = url.searchParams;
+
+  let fieldFilters = {};
+  const rawFieldFilters = search.get("field_filters");
+  if (rawFieldFilters) {
+    try {
+      fieldFilters = JSON.parse(rawFieldFilters) || {};
+    } catch (e) {
+      fieldFilters = {};
+    }
+  }
+
+  updater(fieldFilters);
+
+  if (Object.keys(fieldFilters).length) {
+    search.set("field_filters", JSON.stringify(fieldFilters));
+  } else {
+    search.delete("field_filters");
+  }
+
+  search.set("from_filters", "1");
+  search.delete("start");
+
+  url.search = search.toString();
+  window.location.href = url.toString();
+}
+
+function applyMultiSelectFieldFilter(filterName, filterValue, checked) {
+  updateFieldFiltersInUrl((fieldFilters) => {
+    const existing = Array.isArray(fieldFilters[filterName])
+      ? fieldFilters[filterName].map(String)
+      : [];
+    const valueStr = (filterValue || "").toString();
+
+    let next = existing.slice();
+    if (checked) {
+      if (!next.includes(valueStr)) next.push(valueStr);
+    } else {
+      next = next.filter((value) => value !== valueStr);
+    }
+
+    if (next.length) {
+      fieldFilters[filterName] = next;
+    } else {
+      delete fieldFilters[filterName];
+    }
   });
+}
+
+function bindDynamicFieldFilterInputs(container, filterName) {
+  container
+    .querySelectorAll(`input.product-filter.field-filter[data-filter-name="${filterName}"]`)
+    .forEach((input) => {
+      input.addEventListener("change", (event) => {
+        const target = event.target;
+        applyMultiSelectFieldFilter(
+          target.getAttribute("data-filter-name"),
+          target.getAttribute("data-filter-value"),
+          target.checked
+        );
+      });
+    });
 }
 
 function injectCountsIntoCoreFilters(brands, itemGroups) {
@@ -220,6 +328,7 @@ function injectCountsIntoCoreFilters(brands, itemGroups) {
     
     // Handle Brand filters
     if (labelText.includes('brand')) {
+      let visibleOptions = 0;
       block.querySelectorAll('.filter-lookup-wrapper label, .filter-options label').forEach(filterLabel => {
         // Find or create label-area span
         let labelArea = filterLabel.querySelector('.label-area');
@@ -242,15 +351,30 @@ function injectCountsIntoCoreFilters(brands, itemGroups) {
         if (labelArea) {
           const text = labelArea.textContent.trim().replace(/\s*\(\d+\)$/, ''); // Remove existing count
           const count = brandCounts[text];
-          if (count !== undefined && !labelArea.textContent.includes('(')) {
+          const optionWrapper = filterLabel.closest('.filter-lookup-wrapper') || filterLabel;
+
+          if (count === undefined || count <= 0) {
+            optionWrapper.style.display = 'none';
+            return;
+          }
+
+          optionWrapper.style.display = '';
+          visibleOptions++;
+
+          if (!labelArea.textContent.includes('(')) {
+            labelArea.innerHTML = `${text} <span class="text-muted">(${count})</span>`;
+          } else {
             labelArea.innerHTML = `${text} <span class="text-muted">(${count})</span>`;
           }
         }
       });
+
+      block.style.display = visibleOptions ? '' : 'none';
     }
     
     // Handle Item Group filters
     if (labelText.includes('category') || labelText.includes('item group')) {
+      let visibleOptions = 0;
       block.querySelectorAll('.filter-lookup-wrapper label, .filter-options label').forEach(filterLabel => {
         let labelArea = filterLabel.querySelector('.label-area');
         if (!labelArea) {
@@ -269,11 +393,25 @@ function injectCountsIntoCoreFilters(brands, itemGroups) {
         if (labelArea) {
           const text = labelArea.textContent.trim().replace(/\s*\(\d+\)$/, '');
           const count = groupCounts[text];
-          if (count !== undefined && !labelArea.textContent.includes('(')) {
+          const optionWrapper = filterLabel.closest('.filter-lookup-wrapper') || filterLabel;
+
+          if (count === undefined || count <= 0) {
+            optionWrapper.style.display = 'none';
+            return;
+          }
+
+          optionWrapper.style.display = '';
+          visibleOptions++;
+
+          if (!labelArea.textContent.includes('(')) {
+            labelArea.innerHTML = `${text} <span class="text-muted">(${count})</span>`;
+          } else {
             labelArea.innerHTML = `${text} <span class="text-muted">(${count})</span>`;
           }
         }
       });
+
+      block.style.display = visibleOptions ? '' : 'none';
     }
   });
 }
@@ -355,54 +493,13 @@ function renderOffersFilter(containerId, offersFacets) {
       ${optionsHtml}
     </div>
   `;
+
+  bindDynamicFieldFilterInputs(container, "offers_title");
 }
 
 function renderBadgesFilter(containerId, badgeFacets) {
   const container = document.getElementById(containerId);
   if (!container) return;
-
-  const applyFieldFilterChange = (filterName, filterValue, checked) => {
-    const url = new URL(window.location.href);
-    const search = url.searchParams;
-
-    let fieldFilters = {};
-    const rawFieldFilters = search.get("field_filters");
-    if (rawFieldFilters) {
-      try {
-        fieldFilters = JSON.parse(rawFieldFilters) || {};
-      } catch (e) {
-        fieldFilters = {};
-      }
-    }
-
-    const existing = Array.isArray(fieldFilters[filterName]) ? fieldFilters[filterName].map(String) : [];
-    const valueStr = (filterValue || "").toString();
-
-    let next = existing.slice();
-    if (checked) {
-      if (!next.includes(valueStr)) next.push(valueStr);
-    } else {
-      next = next.filter((v) => v !== valueStr);
-    }
-
-    if (next.length) {
-      fieldFilters[filterName] = next;
-    } else {
-      delete fieldFilters[filterName];
-    }
-
-    if (Object.keys(fieldFilters).length) {
-      search.set("field_filters", JSON.stringify(fieldFilters));
-    } else {
-      search.delete("field_filters");
-    }
-
-    search.set("from_filters", "1");
-    search.delete("start");
-
-    url.search = search.toString();
-    window.location.href = url.toString();
-  };
 
   if (!Array.isArray(badgeFacets) || !badgeFacets.length) {
     container.innerHTML = "";
@@ -456,18 +553,7 @@ function renderBadgesFilter(containerId, badgeFacets) {
     </div>
   `;
 
-  // Bind change handler here since these checkboxes are rendered dynamically
-  // after ProductView binds its filter events.
-  container.querySelectorAll('input.product-filter.field-filter[data-filter-name="badges"]').forEach((el) => {
-    el.addEventListener("change", (e) => {
-      const target = e.target;
-      applyFieldFilterChange(
-        target.getAttribute("data-filter-name"),
-        target.getAttribute("data-filter-value"),
-        target.checked
-      );
-    });
-  });
+  bindDynamicFieldFilterInputs(container, "badges");
 }
 
 
@@ -517,44 +603,20 @@ function renderPriceRanges(containerId, ranges, minMax) {
     }
   }
 
-  // Helper to write price_from / price_to and reload
   const applyPriceFilter = (fromValue, toValue) => {
-    const url = new URL(window.location.href);
-    const search = url.searchParams;
-
-    let fieldFilters = {};
-    const rawFieldFilters = search.get("field_filters");
-    if (rawFieldFilters) {
-      try {
-        fieldFilters = JSON.parse(rawFieldFilters) || {};
-      } catch (e) {
-        fieldFilters = {};
+    updateFieldFiltersInUrl((fieldFilters) => {
+      if (fromValue != null && !isNaN(fromValue)) {
+        fieldFilters.price_from = [fromValue];
+      } else {
+        delete fieldFilters.price_from;
       }
-    }
 
-    if (fromValue != null && !isNaN(fromValue)) {
-      fieldFilters.price_from = [fromValue];
-    } else {
-      delete fieldFilters.price_from;
-    }
-
-    if (toValue != null && !isNaN(toValue)) {
-      fieldFilters.price_to = [toValue];
-    } else {
-      delete fieldFilters.price_to;
-    }
-
-    if (Object.keys(fieldFilters).length) {
-      search.set("field_filters", JSON.stringify(fieldFilters));
-    } else {
-      search.delete("field_filters");
-    }
-
-    search.set("from_filters", "1");
-    search.delete("start");
-
-    url.search = search.toString();
-    window.location.href = url.toString();
+      if (toValue != null && !isNaN(toValue)) {
+        fieldFilters.price_to = [toValue];
+      } else {
+        delete fieldFilters.price_to;
+      }
+    });
   };
 
   // Always use a continuous dual-handle slider for min/max price.
@@ -704,4 +766,3 @@ function renderPriceRanges(containerId, ranges, minMax) {
     applyPriceFilter(minVal, maxVal);
   });
 }
-

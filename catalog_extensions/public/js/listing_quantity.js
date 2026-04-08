@@ -174,7 +174,6 @@ frappe.ready(function () {
   
   // Apply on resize
   window.addEventListener('resize', applyMobileLayoutIfNeeded);
-
   // After the core Add to Cart handler runs, convert the button into qty controls
   listing.addEventListener('click', function (event) {
     var btn = event.target.closest('.btn-add-to-cart-list[data-item-code]');
