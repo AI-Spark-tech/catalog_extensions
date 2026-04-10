@@ -1,0 +1,172 @@
+{% set is_landscape = frappe.form_dict.get("landscape", "1") != "0" %}
+{% set accent = "#ff9900" %}
+{% set ink = "#111827" %}
+{% set muted = "#5f6b7a" %}
+{% set border = "#d7dfe8" %}
+{% set soft = "#f7f9fc" %}
+{% set shipping_address = doc.get("shipping_address_display") or doc.get("address_display") %}
+{% set billing_address = doc.get("address_display") or shipping_address %}
+{% set contact_name = doc.get("contact_display") %}
+{% set order_status = doc.get("status") or _("Submitted") %}
+{% set delivery_date = doc.get("delivery_date") or doc.get("transaction_date") %}
+
+<style>
+@page {
+	size: A4 {{ "landscape" if is_landscape else "portrait" }};
+	margin: 12mm;
+}
+
+.ce-so-print { color: {{ ink }}; }
+.ce-print-toolbar { display:flex; gap:0.6rem; justify-content:flex-end; margin-bottom:1rem; }
+.ce-print-toggle {
+	background:white; border:1px solid {{ border }}; border-radius:999px; color:{{ ink }};
+	display:inline-flex; font-size:9pt; font-weight:700; padding:0.38rem 0.85rem; text-decoration:none !important;
+}
+.ce-print-toggle.is-active { background:#16202a; border-color:#16202a; color:white; }
+.ce-so-header {
+	align-items:flex-start; border-bottom:2px solid {{ ink }}; display:flex; justify-content:space-between;
+	gap:1.5rem; padding-bottom:1rem;
+}
+.ce-so-brand { max-width:58%; }
+.ce-so-kicker {
+	color:{{ accent }}; font-size:10pt; font-weight:800; letter-spacing:0.12em; margin-bottom:0.45rem; text-transform:uppercase;
+}
+.ce-so-title { font-size:24pt; font-weight:800; letter-spacing:-0.03em; line-height:1; margin:0 0 0.4rem; }
+.ce-so-subtitle { color:{{ muted }}; font-size:10pt; line-height:1.5; margin:0; max-width:34rem; }
+.ce-so-summary { min-width:220px; text-align:right; }
+.ce-so-chip {
+	background:#fff4de; border:1px solid #ffd18a; border-radius:999px; color:#8a4b00; display:inline-block;
+	font-size:9pt; font-weight:700; margin-bottom:0.8rem; padding:0.22rem 0.7rem;
+}
+.ce-so-order-id { font-size:15pt; font-weight:800; margin:0 0 0.25rem; }
+.ce-so-order-meta { color:{{ muted }}; font-size:9.5pt; line-height:1.55; }
+.ce-so-grid { display:grid; gap:0.9rem; grid-template-columns:1.35fr 1fr; margin-top:1.2rem; }
+.ce-so-card { background:{{ soft }}; border:1px solid {{ border }}; border-radius:14px; padding:1rem 1.05rem; }
+.ce-so-card-title {
+	color:{{ muted }}; font-size:9pt; font-weight:700; letter-spacing:0.08em; margin-bottom:0.5rem; text-transform:uppercase;
+}
+.ce-so-card-main { font-size:11pt; font-weight:700; line-height:1.5; }
+.ce-so-card-copy { color:{{ muted }}; font-size:9.5pt; line-height:1.6; margin-top:0.3rem; }
+.ce-so-address { line-height:1.65; }
+.ce-so-items { border:1px solid {{ border }}; border-radius:16px; margin-top:1.35rem; overflow:hidden; }
+.ce-so-items table { margin:0; width:100%; }
+.ce-so-items thead th {
+	background:#16202a; border-bottom:0; color:white; font-size:9pt; font-weight:700; letter-spacing:0.04em;
+	padding:0.85rem 0.8rem; text-transform:uppercase;
+}
+.ce-so-items tbody td { border-top:1px solid {{ border }}; padding:0.85rem 0.8rem; vertical-align:top; }
+.ce-so-items tbody tr:nth-child(even) td { background:#fbfcfe; }
+.ce-so-item-title { font-size:10.5pt; font-weight:700; margin-bottom:0.18rem; }
+.ce-so-item-meta { color:{{ muted }}; font-size:9pt; line-height:1.5; }
+.ce-so-number { text-align:right; white-space:nowrap; }
+.ce-so-item-image {
+	align-items:center; background:white; border:1px solid {{ border }}; border-radius:10px; display:inline-flex;
+	height:56px; justify-content:center; overflow:hidden; width:56px;
+}
+.ce-so-item-image img { height:100%; object-fit:contain; width:100%; }
+.ce-so-footer { display:grid; gap:1rem; grid-template-columns:1fr; margin-top:1.35rem; }
+.ce-so-totals { padding:1rem 1.05rem; }
+.ce-so-total-row { align-items:center; display:flex; font-size:10pt; justify-content:space-between; padding:0.42rem 0; }
+.ce-so-total-row + .ce-so-total-row { border-top:1px solid {{ border }}; }
+.ce-so-total-row strong { font-size:13pt; }
+.ce-so-terms { color:{{ muted }}; font-size:9pt; line-height:1.65; margin-top:0.75rem; }
+.print-format.landscape .ce-so-grid { grid-template-columns:1.35fr 1fr; }
+.print-format.landscape .ce-so-footer { grid-template-columns:1fr; }
+@media print { .ce-print-toolbar { display:none !important; } }
+</style>
+
+<div class="ce-so-print">
+	<div class="ce-print-toolbar">
+		<a class="ce-print-toggle {% if is_landscape %}is-active{% endif %}" href="?doctype={{ frappe.form_dict.doctype }}&name={{ frappe.form_dict.name }}&format={{ frappe.form_dict.format or 'order receipt' }}&no_letterhead={{ frappe.form_dict.no_letterhead or 0 }}&landscape=1">{{ _("Landscape View") }}</a>
+		<a class="ce-print-toggle {% if not is_landscape %}is-active{% endif %}" href="?doctype={{ frappe.form_dict.doctype }}&name={{ frappe.form_dict.name }}&format={{ frappe.form_dict.format or 'order receipt' }}&no_letterhead={{ frappe.form_dict.no_letterhead or 0 }}&landscape=0">{{ _("Portrait View") }}</a>
+	</div>
+
+	<div class="ce-so-header">
+		<div class="ce-so-brand">
+			<div class="ce-so-kicker">{{ _("Order Receipt") }}</div>
+			<h1 class="ce-so-title">{{ _("Customer Order") }}</h1>
+			<p class="ce-so-subtitle">{{ _("Customer-facing receipt with a focused item summary for webshop orders and shipments.") }}</p>
+		</div>
+		<div class="ce-so-summary">
+			<div class="ce-so-chip">{{ _(order_status) }}</div>
+			<div class="ce-so-order-id">{{ doc.name }}</div>
+			<div class="ce-so-order-meta">
+				<div>{{ _("Order Date") }}: {{ doc.get_formatted("transaction_date") }}</div>
+				{% if delivery_date %}<div>{{ _("Delivery Date") }}: {{ frappe.utils.formatdate(delivery_date) }}</div>{% endif %}
+				{% if doc.get("company") %}<div>{{ doc.company }}</div>{% endif %}
+			</div>
+		</div>
+	</div>
+
+	<div class="ce-so-grid">
+		<div class="ce-so-card">
+			<div class="ce-so-card-title">{{ _("Customer") }}</div>
+			<div class="ce-so-card-main">{{ doc.customer_name or doc.customer }}</div>
+			{% if contact_name %}<div class="ce-so-card-copy">{{ contact_name }}</div>{% endif %}
+			{% if billing_address %}<div class="ce-so-card-copy ce-so-address">{{ billing_address }}</div>{% endif %}
+		</div>
+
+		<div class="ce-so-card">
+			<div class="ce-so-card-title">{{ _("Order Facts") }}</div>
+			<div class="ce-so-card-copy">
+				<div><strong>{{ _("Order ID") }}:</strong> {{ doc.name }}</div>
+				{% if doc.get("po_no") %}<div><strong>{{ _("PO No") }}:</strong> {{ doc.po_no }}</div>{% endif %}
+				{% if shipping_address %}<div><strong>{{ _("Ship To") }}:</strong> {{ shipping_address | striptags | truncate(90, True, '...') }}</div>{% endif %}
+				<div><strong>{{ _("Order Date") }}:</strong> {{ doc.get_formatted("transaction_date") }}</div>
+				<div><strong>{{ _("Currency") }}:</strong> {{ doc.currency }}</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="ce-so-items">
+		<table class="table">
+			<thead>
+				<tr>
+					<th style="width: 5%">{{ _("Sr") }}</th>
+					<th style="width: 15%">{{ _("Item Code") }}</th>
+					<th style="width: 28%">{{ _("Description") }}</th>
+					<th style="width: 10%">{{ _("Image") }}</th>
+					<th class="ce-so-number" style="width: 10%">{{ _("Quantity") }}</th>
+					<th class="ce-so-number" style="width: 12%">{{ _("Discount Amount") }}</th>
+					<th class="ce-so-number" style="width: 10%">{{ _("Rate") }}</th>
+					<th class="ce-so-number" style="width: 10%">{{ _("Amount") }}</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for row in doc.items %}
+				<tr>
+					<td>{{ row.idx }}</td>
+					<td>
+						<div class="ce-so-item-title">{{ row.item_code }}</div>
+						{% if row.item_name and row.item_name != row.item_code %}<div class="ce-so-item-meta">{{ row.item_name }}</div>{% endif %}
+					</td>
+					<td><div class="ce-so-item-meta">{{ (row.description or row.item_name or row.item_code) | striptags }}</div></td>
+					<td>
+						{% if row.image %}
+						<div class="ce-so-item-image"><img src="{{ row.image }}" alt="{{ row.item_code }}"></div>
+						{% else %}
+						<div class="ce-so-item-meta">-</div>
+						{% endif %}
+					</td>
+					<td class="ce-so-number">{{ row.get_formatted("qty", doc) }}</td>
+					<td class="ce-so-number">{{ row.get_formatted("discount_amount", doc) if row.get("discount_amount") else "-" }}</td>
+					<td class="ce-so-number">{{ row.get_formatted("rate", doc) }}</td>
+					<td class="ce-so-number">{{ row.get_formatted("amount", doc) }}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+
+	<div class="ce-so-footer">
+		<div class="ce-so-card ce-so-totals">
+			<div class="ce-so-card-title">{{ _("Order Summary") }}</div>
+			<div class="ce-so-total-row"><span>{{ _("Net Total") }}</span><span>{{ doc.get_formatted("net_total") }}</span></div>
+			{% if doc.get("total_taxes_and_charges") %}<div class="ce-so-total-row"><span>{{ _("Taxes & Charges") }}</span><span>{{ doc.get_formatted("total_taxes_and_charges") }}</span></div>{% endif %}
+			{% if doc.get("discount_amount") %}<div class="ce-so-total-row"><span>{{ _("Discount") }}</span><span>{{ doc.get_formatted("discount_amount") }}</span></div>{% endif %}
+			<div class="ce-so-total-row"><strong>{{ _("Grand Total") }}</strong><strong>{{ doc.get_formatted("grand_total") }}</strong></div>
+			{% if doc.get("rounded_total") and doc.rounded_total != doc.grand_total %}<div class="ce-so-total-row"><span>{{ _("Rounded Total") }}</span><span>{{ doc.get_formatted("rounded_total") }}</span></div>{% endif %}
+			{% if doc.get("in_words") %}<div class="ce-so-terms">{{ doc.in_words }}</div>{% endif %}
+		</div>
+	</div>
+</div>
