@@ -8,11 +8,19 @@ from webshop.webshop.doctype.override_doctype.payment_request import (
 )
 from webshop.webshop.utils.product import get_web_item_qty_in_stock
 from erpnext.selling.doctype.quotation.quotation import _make_sales_order
+from catalog_extensions.simple_checkout import (
+    PAYMENT_MODE_COD,
+    get_payment_mode_for_doc,
+)
 
 
 @contextmanager
 def run_as(user: str):
-    previous_user = frappe.session.user
+    session = getattr(frappe, "session", None)
+    previous_user = getattr(session, "user", None)
+    if previous_user is None and isinstance(session, dict):
+        previous_user = session.get("user")
+    previous_user = previous_user or "Guest"
     frappe.set_user(user)
     try:
         yield
@@ -21,6 +29,13 @@ def run_as(user: str):
 
 
 class PaymentRequest(WebshopPaymentRequest):
+    @staticmethod
+    def _safe_get_url(path: str) -> str:
+        try:
+            return get_url(path)
+        except Exception:
+            return path
+
     def _get_existing_sales_order_for_quotation(self, quotation_name):
         rows = frappe.db.sql(
             """
@@ -137,7 +152,7 @@ class PaymentRequest(WebshopPaymentRequest):
         if not cart_settings.enabled:
             return
 
-        redirect_to = get_url("/cart")
+        redirect_to = self._safe_get_url("/cart")
 
         try:
             with run_as("Administrator"):
@@ -156,9 +171,9 @@ class PaymentRequest(WebshopPaymentRequest):
             frappe.session["last_order_id"] = ref_doc.name
             try:
                 with run_as("Administrator"):
-                    from catalog_extensions.order_fulfillment import automate_paid_webshop_order_fulfillment
+                    from catalog_extensions.order_fulfillment import automate_webshop_order_fulfillment_if_allowed
 
-                    automate_paid_webshop_order_fulfillment(ref_doc)
+                    automate_webshop_order_fulfillment_if_allowed(ref_doc)
             except Exception:
                 frappe.log_error(
                     title="Catalog fulfillment automation failed",
@@ -173,9 +188,9 @@ class PaymentRequest(WebshopPaymentRequest):
         if self.reference_doctype == "Quotation":
             redirect_target = self._get_existing_sales_order_for_quotation(self.reference_name)
             if not redirect_target:
-                return get_url("/cart")
+                return self._safe_get_url("/cart")
 
-        redirect_to = get_url(f"/order-success?order_id={redirect_target}")
+        redirect_to = self._safe_get_url(f"/order-success?order_id={redirect_target}")
 
         if success_url:
             redirect_to = (

@@ -9,6 +9,13 @@ from webshop.webshop.utils.product import get_web_item_qty_in_stock
 LOW_STOCK_THRESHOLD = 3
 
 
+def _translate(text: str) -> str:
+	try:
+		return _(text)
+	except Exception:
+		return text
+
+
 def _build_stock_guard_metadata(*, available_qty=None, current_qty=0, on_backorder=False, is_stock_item=True):
 	current_qty = flt(current_qty)
 	available_qty = None if available_qty is None else flt(available_qty)
@@ -18,7 +25,7 @@ def _build_stock_guard_metadata(*, available_qty=None, current_qty=0, on_backord
 			"available_qty": available_qty,
 			"max_orderable_qty": None,
 			"stock_state": "backorder",
-			"stock_message": _("Available on backorder"),
+			"stock_message": _translate("Available on backorder"),
 			"can_add_to_cart": True,
 			"can_increase_qty": True,
 		}
@@ -41,7 +48,7 @@ def _build_stock_guard_metadata(*, available_qty=None, current_qty=0, on_backord
 			"available_qty": available_qty,
 			"max_orderable_qty": max_orderable_qty,
 			"stock_state": "out_of_stock",
-			"stock_message": _("Out of stock"),
+			"stock_message": _translate("Out of stock"),
 			"can_add_to_cart": current_qty > 0,
 			"can_increase_qty": False,
 		}
@@ -51,7 +58,7 @@ def _build_stock_guard_metadata(*, available_qty=None, current_qty=0, on_backord
 			"available_qty": available_qty,
 			"max_orderable_qty": max_orderable_qty,
 			"stock_state": "low_stock",
-			"stock_message": _("Only {0} left in stock").format(int(available_qty)),
+			"stock_message": _translate("Only {0} left in stock").format(int(available_qty)),
 			"can_add_to_cart": True,
 			"can_increase_qty": current_qty < max_orderable_qty,
 		}
@@ -60,7 +67,7 @@ def _build_stock_guard_metadata(*, available_qty=None, current_qty=0, on_backord
 		"available_qty": available_qty,
 		"max_orderable_qty": max_orderable_qty,
 		"stock_state": "in_stock",
-		"stock_message": _("In stock"),
+		"stock_message": _translate("In stock"),
 		"can_add_to_cart": True,
 		"can_increase_qty": current_qty < max_orderable_qty,
 	}
@@ -121,7 +128,7 @@ def validate_requested_cart_qty(item_code: str, requested_qty, current_qty=0):
 
 	max_orderable_qty = flt(metadata.get("max_orderable_qty") or 0)
 	if requested_qty > max_orderable_qty:
-		frappe.throw(metadata.get("stock_message") or _("Out of stock"))
+		frappe.throw(metadata.get("stock_message") or _translate("Out of stock"))
 
 	return metadata
 

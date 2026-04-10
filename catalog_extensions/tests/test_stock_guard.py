@@ -1,6 +1,13 @@
+from types import SimpleNamespace
 from unittest import TestCase
 
+import frappe
+
 from catalog_extensions.stock_guard import _build_stock_guard_metadata
+
+
+frappe.cache = SimpleNamespace(hget=lambda _key, _field, generator=None: generator() if generator else None)
+frappe.logger = lambda *args, **kwargs: SimpleNamespace(error=lambda *a, **k: None)
 
 
 class StockGuardTestCase(TestCase):

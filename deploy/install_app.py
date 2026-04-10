@@ -11,6 +11,9 @@ import subprocess
 import argparse
 from pathlib import Path
 
+REQUIRED_APPS = ("erpnext", "payments", "webshop")
+OPTIONAL_APPS = ("erpnext_shipping_extended",)
+
 
 def run_bench_command(command, cwd=None, site=None):
     """Execute a bench command safely."""
@@ -33,6 +36,99 @@ def run_bench_command(command, cwd=None, site=None):
         return False, "", "Command timed out"
     except Exception as e:
         return False, "", str(e)
+
+
+def get_python_path(bench_path):
+    env_python = Path(bench_path) / "env" / "bin" / "python"
+    return str(env_python) if env_python.exists() else sys.executable
+
+
+def get_site_apps(site, bench_path):
+    success, stdout, stderr = run_bench_command(
+        "list-apps --format json",
+        cwd=bench_path,
+        site=site,
+    )
+    if not success:
+        return None, stderr or stdout
+
+    try:
+        parsed = json.loads(stdout)
+    except Exception:
+        parsed = [line.strip() for line in stdout.splitlines() if line.strip()]
+
+    apps = []
+    for row in parsed:
+        if isinstance(row, dict):
+            app_name = row.get("name")
+        else:
+            app_name = row
+        if app_name:
+            apps.append(app_name)
+    return apps, ""
+
+
+def check_site_dependencies(site, bench_path):
+    print(f"[STEP] Checking required site dependencies for {site}...")
+    apps, error = get_site_apps(site, bench_path)
+    if apps is None:
+        print(f"[ERROR] Could not read installed apps for {site}: {error}")
+        return False
+
+    missing_required = [app for app in REQUIRED_APPS if app not in apps]
+    if missing_required:
+        print(
+            "[ERROR] Missing required apps on site "
+            f"{site}: {', '.join(missing_required)}. Install them before catalog_extensions."
+        )
+        return False
+
+    missing_optional = [app for app in OPTIONAL_APPS if app not in apps]
+    for app in missing_optional:
+        print(
+            f"[WARNING] Optional app '{app}' is not installed. "
+            "Shipping-rate automation and reverse-pickup automation will stay in manual mode."
+        )
+
+    print("[SUCCESS] Site dependency check passed")
+    return True
+
+
+def run_setup_script(script_name, site, bench_path):
+    python_path = get_python_path(bench_path)
+    script_path = Path(bench_path) / "apps" / "catalog_extensions" / "deploy" / script_name
+    result = subprocess.run(
+        [python_path, str(script_path), "--site", site],
+        cwd=bench_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return True
+
+    print(result.stdout.strip())
+    print(f"[ERROR] {script_name} failed: {result.stderr}")
+    return False
+
+
+def verify_setup(site, bench_path):
+    print(f"[STEP] Verifying setup artifacts on {site}...")
+    success, stdout, stderr = run_bench_command(
+        "execute catalog_extensions.install_support.assert_setup_complete",
+        cwd=bench_path,
+        site=site,
+    )
+    if success:
+        warnings = stdout.strip()
+        if warnings and warnings != "[]":
+            print(f"[WARNING] Optional dependency notices: {warnings}")
+        print("[SUCCESS] Setup verification passed")
+        return True
+
+    print(f"[ERROR] Setup verification failed: {stderr or stdout}")
+    return False
 
 
 def check_app_installed(site, bench_path, app_name):
@@ -162,6 +258,9 @@ def main():
     if not (bench_path / "sites").exists():
         print(f"[ERROR] Invalid bench path: {args.bench_path}")
         sys.exit(1)
+
+    if not check_site_dependencies(args.site, str(bench_path)):
+        sys.exit(1)
     
     # Step 1: Install app
     if not install_app(args.site, str(bench_path)):
@@ -169,6 +268,15 @@ def main():
     
     # Step 2: Migrate to create DocTypes
     if not migrate_site(args.site, str(bench_path)):
+        sys.exit(1)
+
+    if not run_setup_script("setup_doctypes.py", args.site, str(bench_path)):
+        sys.exit(1)
+
+    if not run_setup_script("setup_custom_fields.py", args.site, str(bench_path)):
+        sys.exit(1)
+
+    if not verify_setup(args.site, str(bench_path)):
         sys.exit(1)
     
     # Step 3: Clear cache
@@ -182,9 +290,9 @@ def main():
     print("[COMPLETE] Installation finished!")
     print("=" * 60)
     print("\nNext steps:")
-    print("1. Run: python setup_doctypes.py --site {site}")
-    print("2. Run: python setup_custom_fields.py --site {site}")
-    print("3. Configure Catalog Price Ranges in Desk")
+    print("1. Configure Catalog Price Ranges in Desk")
+    print("2. Review webshop checkout settings and website item setup")
+    print("3. Install erpnext_shipping_extended later if you want automated shipping enhancements")
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ def create_catalog_price_range_doctype(frappe):
 def create_webshop_simple_checkout_settings_doctype(frappe):
 	"""Create the Webshop Simple Checkout Settings singleton DocType if missing.
 
-	This is used to control simple checkout behaviour per site without
+	This is used to control webshop checkout behaviour per site without
 	manual DocType creation in each environment.
 	"""
 
@@ -135,34 +135,77 @@ def create_webshop_simple_checkout_settings_doctype(frappe):
 	field_definitions = [
 		{
 			"fieldname": "enable_simple_checkout",
-			"label": "Enable Simple Checkout",
+			"label": "Legacy Webshop Checkout Toggle",
 			"fieldtype": "Check",
 			"default": "0",
+			"hidden": 1,
+			"read_only": 1,
+			"description": "Legacy compatibility field. Shipping and payment visibility is now controlled directly by the flags below.",
 		},
 		{
 			"fieldname": "hide_shipping_on_webshop",
-			"label": "Hide Shipping on Webshop",
+			"label": "Disable Shipping Section on Cart",
 			"fieldtype": "Check",
 			"default": "0",
+			"description": (
+				"Hide shipping and billing selectors on the cart, auto-apply the default address, "
+				"and suppress shipping tracking and return flow on order pages."
+			),
 		},
 		{
 			"fieldname": "hide_payment_on_webshop",
-			"label": "Hide Payment on Webshop",
+			"label": "Disable Payment Section on Cart",
 			"fieldtype": "Check",
 			"default": "0",
+			"description": (
+				"Hide payment-related cart UI, skip the checkout payment workflow, apply default payment terms, "
+				"and suppress payment and refund actions on order pages. Prepaid and COD selection on the cart "
+				"become inactive while this is enabled."
+			),
+		},
+		{
+			"fieldname": "enable_prepaid",
+			"label": "Enable Prepaid",
+			"fieldtype": "Check",
+			"default": "1",
+			"description": "Allow customers to choose prepaid checkout when the payment section is enabled.",
+		},
+		{
+			"fieldname": "enable_cod",
+			"label": "Enable Cash on Delivery",
+			"fieldtype": "Check",
+			"default": "0",
+			"description": "Allow customers to choose cash on delivery when the payment section is enabled.",
+		},
+		{
+			"fieldname": "default_payment_mode",
+			"label": "Default Payment Mode",
+			"fieldtype": "Select",
+			"options": "PREPAID\nCOD",
+			"default": "PREPAID",
+			"description": "Use this payment mode by default when the payment section is enabled and multiple checkout payment modes are available.",
 		},
 		{
 			"fieldname": "default_shipping_address_type",
 			"label": "Default Shipping Address Type",
 			"fieldtype": "Select",
-			"options": "Shipping\nBilling\nPrimary",
+			"options": "Shipping\nBilling",
 			"default": "Shipping",
+			"description": "Choose which saved address type should be auto-applied when shipping is hidden.",
 		},
 		{
 			"fieldname": "default_payment_term_template",
 			"label": "Default Payment Terms Template",
 			"fieldtype": "Link",
 			"options": "Payment Terms Template",
+			"description": "Automatically apply this payment terms template when payment is hidden.",
+		},
+		{
+			"fieldname": "enable_cancel_order",
+			"label": "Enable Cancel Order",
+			"fieldtype": "Check",
+			"default": "0",
+			"description": "Allow the cancel action on order pages when the order state normally permits cancellation.",
 		},
 	]
 
@@ -170,18 +213,30 @@ def create_webshop_simple_checkout_settings_doctype(frappe):
 		print(f"[INFO] DocType '{doctype_name}' already exists")
 		doctype = frappe.get_doc("DocType", doctype_name)
 		existing_fieldnames = {field.fieldname for field in doctype.fields or []}
-		fields_added = False
+		fields_changed = False
+
+		for field in doctype.fields or []:
+			matching_definition = next(
+				(field_def for field_def in field_definitions if field_def["fieldname"] == field.fieldname),
+				None,
+			)
+			if not matching_definition:
+				continue
+			for key in ("label", "options", "default", "description", "hidden", "read_only"):
+				if key in matching_definition and getattr(field, key, None) != matching_definition[key]:
+					setattr(field, key, matching_definition[key])
+					fields_changed = True
 
 		for field_def in field_definitions:
 			if field_def["fieldname"] in existing_fieldnames:
 				continue
 			doctype.append("fields", field_def)
-			fields_added = True
+			fields_changed = True
 
-		if fields_added:
+		if fields_changed:
 			doctype.save(ignore_permissions=True)
 			frappe.db.commit()
-			print(f"[SUCCESS] Added missing fields to '{doctype_name}'")
+			print(f"[SUCCESS] Updated fields on '{doctype_name}'")
 
 		return True
 

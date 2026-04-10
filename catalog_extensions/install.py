@@ -2,6 +2,7 @@ import frappe
 import os
 import sys
 
+from catalog_extensions.install_support import assert_install_prerequisites, assert_setup_complete
 from catalog_extensions.printing import ensure_order_receipt_print_format
 
 
@@ -26,6 +27,7 @@ def _run_setup():
     This is safe to run multiple times because the underlying helpers
     check for existing DocTypes/fields/indexes before creating them.
     """
+    assert_install_prerequisites()
     setup_doctypes, setup_custom_fields = _import_setup_modules()
     
     # Create Catalog Price Range DocType + default ranges
@@ -35,9 +37,13 @@ def _run_setup():
     # Create Webshop Simple Checkout Settings singleton DocType
     setup_doctypes.create_webshop_simple_checkout_settings_doctype(frappe)
 
+    # Create Customer Group Brand Mapping DocType used by brand filtering
+    setup_doctypes.create_customer_group_brand_mapping_doctype(frappe)
+
     # Create custom fields on Item, Website Item
     setup_custom_fields.setup_item_fields(frappe)
     setup_custom_fields.setup_website_item_fields(frappe)
+    setup_custom_fields.setup_checkout_mode_fields(frappe)
 
     # Ensure Item Badge child DocType is present
     setup_custom_fields.sync_item_badge_doctype(frappe)
@@ -47,13 +53,18 @@ def _run_setup():
 
     # Ensure portal-only customer receipt print format exists
     ensure_order_receipt_print_format()
+    return assert_setup_complete()
 
 
 def after_install():
     """Hook: run after app is installed on a site."""
-    _run_setup()
+    warnings = _run_setup()
+    for warning in warnings:
+        frappe.logger("catalog_extensions.install").warning(warning)
 
 
 def after_migrate():
     """Hook: run after migrations (helps on existing benches/sites)."""
-    _run_setup()
+    warnings = _run_setup()
+    for warning in warnings:
+        frappe.logger("catalog_extensions.install").warning(warning)

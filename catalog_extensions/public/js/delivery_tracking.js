@@ -102,7 +102,7 @@ function renderTracking(mountPoint, data) {
 		showShipmentTraceability || showReturnTraceability || showPaymentTraceability
 			? buildTrackingTreeMarkup(milestones, shipmentMarkup, returnShipmentMarkup, flowVisibility)
 			: "";
-	const tabsMarkup = buildTabsMarkup(trackingTreeMarkup);
+	const tabsMarkup = buildTabsMarkup(trackingTreeMarkup, flowVisibility);
 
 	mountPoint.innerHTML = `
 		<div class="ce-tracking-card ce-tracking-card--compact">
@@ -134,13 +134,18 @@ function renderTracking(mountPoint, data) {
 	`;
 
 	bindCollapsiblePanels(mountPoint);
-	syncPrimaryPaymentAction(order, statusSignals);
+	syncPrimaryPaymentAction(order, statusSignals, flowVisibility);
 	renderPageActions(actions);
 }
 
-function syncPrimaryPaymentAction(order, statusSignals) {
+function syncPrimaryPaymentAction(order, statusSignals, flowVisibility) {
 	const actionButton = document.getElementById("pay-for-order");
 	if (!actionButton) {
+		return;
+	}
+
+	if (flowVisibility && flowVisibility.payment_active === false) {
+		actionButton.style.display = "none";
 		return;
 	}
 
@@ -181,7 +186,20 @@ function getReceiptLink(order, settledInvoices) {
 	return "";
 }
 
-function buildTabsMarkup(trackingTreeMarkup) {
+function shouldHideTrackingDetails(flowVisibility) {
+	if (!flowVisibility || !flowVisibility.simple_checkout_enabled) {
+		return false;
+	}
+
+	return flowVisibility.show_payment_traceability === false
+		|| flowVisibility.show_shipment_traceability === false;
+}
+
+function buildTabsMarkup(trackingTreeMarkup, flowVisibility) {
+	if (shouldHideTrackingDetails(flowVisibility)) {
+		return "";
+	}
+
 	const trackingPanel = trackingTreeMarkup
 		? `<div class="ce-tracking-tab-panel is-active" data-tab-panel="tracking">
 				${buildCollapsiblePanel(
@@ -529,9 +547,15 @@ function renderPageActions(actions) {
 	});
 
 	const items = [];
-	pushActionMenuItem(items, "cancel", actions.cancel_label || "Cancel order", actions.can_cancel, actions.cancel_reason);
-	pushActionMenuItem(items, "return", actions.return_label || "Return request", actions.can_return, actions.return_reason);
-	pushActionMenuItem(items, "refund", actions.refund_label || "Request refund", actions.can_refund, actions.refund_reason);
+	if (actions.show_cancel_actions !== false) {
+		pushActionMenuItem(items, "cancel", actions.cancel_label || "Cancel order", actions.can_cancel, actions.cancel_reason);
+	}
+	if (actions.show_shipping_actions !== false) {
+		pushActionMenuItem(items, "return", actions.return_label || "Return request", actions.can_return, actions.return_reason);
+	}
+	if (actions.show_payment_actions !== false) {
+		pushActionMenuItem(items, "refund", actions.refund_label || "Request refund", actions.can_refund, actions.refund_reason);
+	}
 
 	if (items.length) {
 		const divider = document.createElement("div");

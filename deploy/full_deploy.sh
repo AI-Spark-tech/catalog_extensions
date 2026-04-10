@@ -16,6 +16,8 @@ NC='\033[0m' # No Color
 # Configuration
 APP_NAME="catalog_extensions"
 MODULE_NAME="Catalog Extensions"
+REQUIRED_APPS=("erpnext" "payments" "webshop")
+OPTIONAL_APPS=("erpnext_shipping_extended")
 
 # Helper functions
 log_info() {
@@ -67,6 +69,27 @@ check_prerequisites() {
     fi
     
     log_success "Prerequisites check passed"
+}
+
+check_site_dependencies() {
+    log_step "Checking required apps on site ${SITE}..."
+
+    INSTALLED_APPS=$(bench --site ${SITE} list-apps 2>/dev/null || echo "")
+    for app in "${REQUIRED_APPS[@]}"; do
+        if ! echo "$INSTALLED_APPS" | grep -q "^${app}$"; then
+            log_error "Required app '${app}' is not installed on ${SITE}"
+            log_error "Install all required apps before deploying ${APP_NAME}"
+            exit 1
+        fi
+    done
+
+    for app in "${OPTIONAL_APPS[@]}"; do
+        if ! echo "$INSTALLED_APPS" | grep -q "^${app}$"; then
+            log_warning "Optional app '${app}' is not installed. Shipping-rate, pickup, and reverse-pickup automation will stay in manual mode."
+        fi
+    done
+
+    log_success "Site dependency check passed"
 }
 
 # Install app on site
@@ -197,15 +220,18 @@ verify_installation() {
         return 1
     fi
     
-    # Check if DocType exists (via bench execute)
-    EXISTS=$(bench --site ${SITE} execute frappe.db.exists 2>/dev/null <<< '{"doctype": "DocType", "name": "Catalog Price Range"}')
-    if [ "$EXISTS" = "True" ]; then
-        log_success "Catalog Price Range DocType exists"
-    else
-        log_warning "Could not verify DocType (may need manual check)"
+    if bench --site ${SITE} execute catalog_extensions.install_support.assert_setup_complete >/tmp/catalog_extensions_verify.log 2>&1; then
+        log_success "Setup artifacts verified"
+        VERIFY_WARNINGS=$(cat /tmp/catalog_extensions_verify.log)
+        if [ -n "$VERIFY_WARNINGS" ] && [ "$VERIFY_WARNINGS" != "[]" ]; then
+            log_warning "Optional dependency notices: $VERIFY_WARNINGS"
+        fi
+        return 0
     fi
-    
-    return 0
+
+    log_error "Setup verification failed"
+    cat /tmp/catalog_extensions_verify.log
+    return 1
 }
 
 # Show final instructions
@@ -326,6 +352,7 @@ main() {
     
     # Execute deployment steps
     check_prerequisites || exit 1
+    check_site_dependencies || exit 1
     install_app || exit 1
     run_migration || exit 1
     
@@ -339,7 +366,7 @@ main() {
     
     clear_cache || true
     restart_bench || true
-    verify_installation || true
+    verify_installation || exit 1
     
     # Show summary
     show_summary

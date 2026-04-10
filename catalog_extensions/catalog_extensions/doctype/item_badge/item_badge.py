@@ -1,6 +1,3 @@
-import frappe
-from frappe.model.document import Document
+from catalog_extensions.doctype.item_badge.item_badge import ItemBadge
 
-
-class ItemBadge(Document):
-    pass
+__all__ = ["ItemBadge"]

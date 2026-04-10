@@ -12,6 +12,41 @@ from catalog_extensions import simple_checkout
 from catalog_extensions.overrides.payment_request import PaymentRequest
 
 
+class _DummyLogger:
+    def info(self, *args, **kwargs):
+        return None
+
+    def warning(self, *args, **kwargs):
+        return None
+
+    def error(self, *args, **kwargs):
+        return None
+
+
+def _fake_cache_hget(_key, _field, generator=None):
+    return generator() if generator else None
+
+
+frappe.local = SimpleNamespace(
+    flags=SimpleNamespace(in_test=True, mute_messages=False),
+    session=SimpleNamespace(user="test@example.com"),
+    conf=SimpleNamespace(host_name="http://test.local", hostname="http://test.local"),
+)
+frappe.flags = SimpleNamespace(in_test=True, mute_messages=False)
+frappe.session = {}
+frappe.cache = SimpleNamespace(hget=_fake_cache_hget, get_value=lambda *args, **kwargs: None)
+frappe.db = SimpleNamespace(
+    exists=lambda *args, **kwargs: False,
+    get_value=lambda *args, **kwargs: None,
+    get_single_value=lambda *args, **kwargs: None,
+    sql=lambda *args, **kwargs: [],
+)
+frappe.logger = lambda *args, **kwargs: _DummyLogger()
+frappe.log_error = lambda *args, **kwargs: None
+frappe.get_traceback = lambda: ""
+frappe.get_system_settings = lambda *args, **kwargs: None
+
+
 class DummyOrder:
     def __init__(self, **values):
         self.doctype = values.get("doctype", "Sales Order")
@@ -27,10 +62,14 @@ class DummyOrder:
             "base_grand_total": values.get("base_grand_total", 100),
             "base_rounded_total": values.get("base_rounded_total", 0),
             "order_type": values.get("order_type", "Shopping Cart"),
+            "grand_total": values.get("grand_total", values.get("base_grand_total", 100)),
+            "rounded_total": values.get("rounded_total", values.get("base_grand_total", 100)),
+            "webshop_payment_mode": values.get("webshop_payment_mode", "PREPAID"),
         }
         self.comments = []
         self.cancelled = False
         self.cancel_side_effect = values.get("cancel_side_effect")
+        self.saved = False
 
     def get(self, key, default=None):
         return self._values.get(key, default)
@@ -38,9 +77,12 @@ class DummyOrder:
     def add_comment(self, comment_type, content):
         self.comments.append((comment_type, content))
 
-    def db_set(self, values):
-        for key, value in values.items():
-            self._values[key] = value
+    def db_set(self, key, value=None, **kwargs):
+        if isinstance(key, dict):
+            for fieldname, fieldvalue in key.items():
+                self._values[fieldname] = fieldvalue
+            return
+        self._values[key] = value
 
     def update_status(self, status):
         self._values["status"] = status
@@ -51,6 +93,10 @@ class DummyOrder:
         self.cancelled = True
 
     def reload(self):
+        return self
+
+    def save(self, ignore_permissions=False):
+        self.saved = True
         return self
 
 
@@ -93,9 +139,12 @@ class DummyShipment:
     def add_comment(self, comment_type, content):
         self.comments.append((comment_type, content))
 
-    def db_set(self, values):
-        for key, value in values.items():
-            self._values[key] = value
+    def db_set(self, key, value=None, **kwargs):
+        if isinstance(key, dict):
+            for fieldname, fieldvalue in key.items():
+                self._values[fieldname] = fieldvalue
+            return
+        self._values[key] = value
 
     def reload(self):
         return self
@@ -133,6 +182,7 @@ class DummyQuotation:
             "rounded_total": values.get("rounded_total", 100),
             "grand_total": values.get("grand_total", 100),
             "order_type": values.get("order_type", "Shopping Cart"),
+            "webshop_payment_mode": values.get("webshop_payment_mode", "PREPAID"),
         }
         self.saved = False
         self.inserted = False
@@ -163,6 +213,29 @@ class DummyQuotation:
         self.submitted = True
         self.docstatus = 1
         return self
+
+
+class DummyReturnDoc:
+    def __init__(self, items=None):
+        self.name = "SINV-RET-TEST-0001"
+        self.items = items or []
+        self.flags = SimpleNamespace(ignore_permissions=False)
+        self.comments = []
+        self.allocate_advances_automatically = 1
+        self.inserted = False
+
+    def set(self, key, value):
+        setattr(self, key, value)
+
+    def calculate_taxes_and_totals(self):
+        return None
+
+    def insert(self):
+        self.inserted = True
+        return self
+
+    def add_comment(self, comment_type, content):
+        self.comments.append((comment_type, content))
 
 
 class PortalOrderFlowTestCase(TestCase):
@@ -218,6 +291,28 @@ class PortalOrderFlowTestCase(TestCase):
             api._get_cancel_unavailable_reason(context),
             "This order is already in fulfillment and can no longer be cancelled online.",
         )
+
+    def test_cancel_respects_checkout_setting(self):
+        order_doc = DummyOrder(per_billed=100, per_picked=0, per_delivered=0)
+        context = self.make_context(
+            order_doc=order_doc,
+            flow_visibility={
+                "payment_active": True,
+                "shipping_active": True,
+                "return_active": True,
+                "show_shipment_traceability": True,
+                "show_return_traceability": True,
+                "cancel_active": False,
+            },
+        )
+
+        self.assertEqual(
+            api._get_cancel_unavailable_reason(context),
+            "Order cancellation is disabled for this checkout flow.",
+        )
+
+        actions = api._get_order_actions(context, {"payment_received": True, "eligible_return_items_count": 0})
+        self.assertFalse(actions["can_cancel"])
 
     def test_refund_requires_return_receipt(self):
         context = self.make_context(return_invoices=[{"name": "SINV-RET-0001"}])
@@ -451,23 +546,41 @@ class PortalOrderFlowTestCase(TestCase):
         pr.create_payment_entry.assert_not_called()
         pr.db_set.assert_called_once_with({"status": "Paid", "outstanding_amount": 0})
 
-    def test_simple_checkout_place_order_returns_payment_redirect_payload(self):
+    def test_simple_checkout_place_order_delegates_to_core_flow(self):
         quotation = DummyQuotation()
-        payment_request = MagicMock()
-        payment_request.name = "PR-0001"
-        payment_request.get_payment_url.return_value = "/payments/checkout/PR-0001"
+        settings = SimpleNamespace(hide_shipping_on_webshop=1, hide_payment_on_webshop=0)
+        order_doc = DummyOrder(name="SO-TEST-0001")
 
         with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
             patch("catalog_extensions.simple_checkout._get_checkout_quotation", return_value=quotation),
-            patch("catalog_extensions.simple_checkout._build_payment_request_for_quotation", return_value=payment_request),
-            patch("catalog_extensions.simple_checkout._get_existing_sales_order_for_quotation", return_value=None),
+            patch("catalog_extensions.simple_checkout.frappe.get_doc", return_value=order_doc),
+            patch("catalog_extensions.simple_checkout.core_cart.place_order", return_value="SO-TEST-0001") as place_order,
         ):
             result = simple_checkout.place_order()
 
-        self.assertEqual(result["checkout_state"], "payment_pending")
-        self.assertEqual(result["payment_request"], payment_request.name)
-        self.assertEqual(result["redirect_to"], "/payments/checkout/PR-0001")
+        self.assertEqual(result, "SO-TEST-0001")
         self.assertTrue(quotation.saved)
+        self.assertEqual(order_doc.get("webshop_payment_mode"), "PREPAID")
+        place_order.assert_called_once_with()
+
+    def test_cod_place_order_triggers_fulfillment_without_payment_request(self):
+        quotation = DummyQuotation()
+        settings = SimpleNamespace(enable_prepaid=1, enable_cod=1, hide_shipping_on_webshop=0, hide_payment_on_webshop=0)
+        order_doc = DummyOrder(name="SO-TEST-COD-0001")
+
+        with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
+            patch("catalog_extensions.simple_checkout._get_checkout_quotation", return_value=quotation),
+            patch("catalog_extensions.simple_checkout.frappe.get_doc", return_value=order_doc),
+            patch("catalog_extensions.simple_checkout.core_cart.place_order", return_value=order_doc.name),
+            patch("catalog_extensions.order_fulfillment.automate_webshop_order_fulfillment_if_allowed") as automate,
+        ):
+            result = simple_checkout.place_order(payment_mode="COD")
+
+        self.assertEqual(result, order_doc.name)
+        self.assertEqual(order_doc.get("webshop_payment_mode"), "COD")
+        automate.assert_called_once_with(order_doc)
 
     def test_payment_request_set_as_paid_creates_sales_order_for_quotation_reference(self):
         pr = object.__new__(PaymentRequest)
@@ -541,6 +654,7 @@ class PortalOrderFlowTestCase(TestCase):
                 return_value={"service_provider": "Shiprocket", "total_price": 99},
             ),
             patch("catalog_extensions.order_fulfillment._queue_dispatch", return_value={"queued": True}),
+            patch("catalog_extensions.order_fulfillment.is_doctype_available", return_value=True),
             patch("catalog_extensions.order_fulfillment.frappe.enqueue") as enqueue_job,
         ):
             result = order_fulfillment.automate_paid_webshop_order_fulfillment(order_doc)
@@ -562,6 +676,7 @@ class PortalOrderFlowTestCase(TestCase):
             patch("catalog_extensions.order_fulfillment._get_shipment_doc", return_value=(shipment_doc, True)),
             patch("catalog_extensions.order_fulfillment._get_best_service_info", return_value=None),
             patch("catalog_extensions.order_fulfillment.frappe.db.exists", return_value=False),
+            patch("catalog_extensions.order_fulfillment.is_doctype_available", return_value=True),
         ):
             result = order_fulfillment.automate_paid_webshop_order_fulfillment(order_doc)
 
@@ -697,7 +812,10 @@ class PortalOrderFlowTestCase(TestCase):
                 "catalog_extensions.order_fulfillment._get_sales_order_name_for_delivery_note",
                 return_value=order_doc.name,
             ),
-            patch("catalog_extensions.order_fulfillment.frappe.db.exists", return_value=True),
+            patch(
+                "catalog_extensions.order_fulfillment.frappe.db.exists",
+                side_effect=self.fake_exists({"Sales Order"}, comments_exist=False),
+            ),
             patch("catalog_extensions.order_fulfillment.frappe.get_doc", return_value=order_doc),
             patch(
                 "catalog_extensions.order_fulfillment.automate_shipment_for_delivery_note",
@@ -889,3 +1007,302 @@ class PortalOrderFlowTestCase(TestCase):
             api.sync_portal_refund_processing_after_return_receipt(return_delivery_note)
 
         start_refund.assert_called_once_with({"order_doc": sales_order})
+
+    def test_portal_return_request_degrades_when_optional_shipping_extension_is_missing(self):
+        order_doc = DummyOrder(name="SO-TEST-RET-0001")
+        shipment_doc = DummyShipment(name="SHIP-TEST-RET-0001", service_provider="Shiprocket")
+        shipment_doc._values["shiprocket_order_id"] = "SR-ORDER-1"
+        return_doc = DummyReturnDoc(
+            items=[
+                frappe._dict(
+                    {
+                        "sales_invoice_item": "SINV-ITEM-1",
+                        "qty": -1,
+                        "stock_qty": -1,
+                        "conversion_factor": 1,
+                        "item_code": "ITEM-001",
+                    }
+                )
+            ]
+        )
+        context = self.make_context(
+            order_doc=order_doc,
+            shipments=[{"name": shipment_doc.name}],
+            eligible_return_items=[
+                {
+                    "sales_invoice_item": "SINV-ITEM-1",
+                    "remaining_returnable_qty": 1,
+                    "is_return_eligible": 1,
+                    "item_code": "ITEM-001",
+                }
+            ],
+            return_source_invoice={"name": "SINV-TEST-0001"},
+            return_window_open=True,
+        )
+
+        with (
+            patch("erpnext.controllers.sales_and_purchase_return.make_return_doc", return_value=return_doc),
+            patch("catalog_extensions.api._get_portal_order_doc", return_value=order_doc),
+            patch("catalog_extensions.api._build_portal_order_tracking_context", return_value=context),
+            patch("catalog_extensions.api._build_status_signals", return_value={"completed": True}),
+            patch("catalog_extensions.api._get_return_target_shipment", return_value={"name": shipment_doc.name}),
+            patch("catalog_extensions.api.is_optional_app_installed", return_value=False),
+            patch("catalog_extensions.api.frappe.get_doc", return_value=shipment_doc),
+            patch("catalog_extensions.api.run_as", return_value=nullcontext()),
+        ):
+            result = api.create_portal_return_request(order_doc.name, order_doc.doctype)
+
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["return_shipment"])
+        self.assertIn("Reverse pickup will be arranged manually", result["message"])
+        self.assertTrue(return_doc.inserted)
+        self.assertTrue(any("erpnext_shipping_extended is not installed" in comment for _, comment in return_doc.comments))
+        self.assertTrue(any("erpnext_shipping_extended is not installed" in comment for _, comment in order_doc.comments))
+
+
+class CheckoutSettingsSemanticsTestCase(TestCase):
+    def test_get_cart_quotation_uses_core_workflow_when_sections_are_not_disabled(self):
+        settings = SimpleNamespace(hide_shipping_on_webshop=0, hide_payment_on_webshop=0)
+
+        with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
+            patch("catalog_extensions.simple_checkout.core_cart.get_cart_quotation", return_value={"doc": "core"}) as get_cart,
+        ):
+            result = simple_checkout.get_cart_quotation()
+
+        self.assertEqual(result, {"doc": "core"})
+        get_cart.assert_called_once_with(None)
+
+    def test_apply_defaults_only_sets_payment_terms_when_payment_is_disabled(self):
+        quotation = DummyQuotation(
+            shipping_address_name=None,
+            customer_address=None,
+            payment_terms_template=None,
+        )
+        settings = SimpleNamespace(
+            hide_shipping_on_webshop=0,
+            hide_payment_on_webshop=1,
+            default_payment_term_template="NET-30",
+            default_shipping_address_type="Shipping",
+        )
+
+        simple_checkout._ensure_defaults_on_quotation(quotation, settings)
+
+        self.assertIsNone(quotation.shipping_address_name)
+        self.assertIsNone(quotation.customer_address)
+        self.assertEqual(quotation.payment_terms_template, "NET-30")
+
+    def test_apply_defaults_only_sets_address_when_shipping_is_disabled(self):
+        quotation = DummyQuotation(
+            shipping_address_name=None,
+            customer_address=None,
+            payment_terms_template=None,
+        )
+        party = SimpleNamespace(doctype="Customer", name="CUST-0001", customer_name="Test Customer")
+        shipping_address = SimpleNamespace(name="ADDR-SHIP", address_type="Shipping")
+        settings = SimpleNamespace(
+            hide_shipping_on_webshop=1,
+            hide_payment_on_webshop=0,
+            default_payment_term_template="NET-30",
+            default_shipping_address_type="Shipping",
+        )
+
+        with (
+            patch("catalog_extensions.simple_checkout.core_cart.get_party", return_value=party),
+            patch("catalog_extensions.simple_checkout.core_cart.get_address_docs", return_value=[shipping_address]),
+            patch("catalog_extensions.simple_checkout.core_cart.apply_cart_settings") as apply_cart_settings,
+        ):
+            simple_checkout._ensure_defaults_on_quotation(quotation, settings)
+
+        self.assertEqual(quotation.shipping_address_name, "ADDR-SHIP")
+        self.assertEqual(quotation.customer_address, "ADDR-SHIP")
+        self.assertIsNone(quotation.payment_terms_template)
+        apply_cart_settings.assert_called_once_with(quotation=quotation)
+
+    def test_frontend_flags_include_cancel_toggle(self):
+        settings = SimpleNamespace(
+            enable_prepaid=1,
+            enable_cod=1,
+            default_payment_mode="COD",
+            hide_shipping_on_webshop=1,
+            hide_payment_on_webshop=0,
+            enable_cancel_order=1,
+        )
+
+        with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
+            patch("catalog_extensions.simple_checkout.core_cart._get_cart_quotation", return_value=DummyQuotation(webshop_payment_mode="COD")),
+        ):
+            flags = simple_checkout.get_simple_checkout_flags()
+
+        self.assertTrue(flags["enable_simple_checkout"])
+        self.assertTrue(flags["hide_shipping_on_webshop"])
+        self.assertFalse(flags["hide_payment_on_webshop"])
+        self.assertTrue(flags["enable_cancel_order"])
+        self.assertTrue(flags["enable_prepaid"])
+        self.assertTrue(flags["enable_cod"])
+        self.assertEqual(flags["selected_payment_mode"], "COD")
+        self.assertEqual(flags["default_payment_mode"], "COD")
+        self.assertTrue(flags["show_payment_mode_selector"])
+        self.assertFalse(flags["show_online_payment_ui"])
+
+    def test_frontend_compatibility_flag_tracks_hide_flags_instead_of_legacy_toggle(self):
+        settings = SimpleNamespace(
+            enable_simple_checkout=1,
+            hide_shipping_on_webshop=0,
+            hide_payment_on_webshop=0,
+            enable_cancel_order=1,
+        )
+
+        with patch("catalog_extensions.simple_checkout._get_settings", return_value=settings):
+            flags = simple_checkout.get_simple_checkout_flags()
+            enabled = simple_checkout.is_simple_checkout_enabled()
+
+        self.assertFalse(flags["enable_simple_checkout"])
+        self.assertFalse(flags["hide_shipping_on_webshop"])
+        self.assertFalse(flags["hide_payment_on_webshop"])
+        self.assertFalse(enabled)
+
+    def test_frontend_flags_disable_payment_modes_when_payment_section_is_hidden(self):
+        settings = SimpleNamespace(
+            enable_prepaid=1,
+            enable_cod=1,
+            default_payment_mode="COD",
+            hide_shipping_on_webshop=0,
+            hide_payment_on_webshop=1,
+            enable_cancel_order=1,
+        )
+
+        with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
+            patch("catalog_extensions.simple_checkout.core_cart._get_cart_quotation", return_value=DummyQuotation(webshop_payment_mode="COD")),
+        ):
+            flags = simple_checkout.get_simple_checkout_flags()
+
+        self.assertFalse(flags["enable_prepaid"])
+        self.assertFalse(flags["enable_cod"])
+        self.assertFalse(flags["show_payment_mode_selector"])
+        self.assertFalse(flags["show_online_payment_ui"])
+        self.assertEqual(flags["selected_payment_mode"], "PREPAID")
+
+    def test_place_order_skips_payment_request_when_payment_section_is_hidden(self):
+        quotation = DummyQuotation()
+        settings = SimpleNamespace(hide_shipping_on_webshop=0, hide_payment_on_webshop=1)
+        order_doc = DummyOrder(name="SO-TEST-0001")
+
+        with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
+            patch("catalog_extensions.simple_checkout._get_checkout_quotation", return_value=quotation),
+            patch("catalog_extensions.simple_checkout.frappe.get_doc", return_value=order_doc),
+            patch("catalog_extensions.simple_checkout.core_cart.place_order", return_value=order_doc.name),
+            patch("catalog_extensions.simple_checkout.core_make_payment_request") as make_payment_request,
+        ):
+            result = simple_checkout.place_order(payment_mode="COD")
+
+        self.assertFalse(result["payment_required"])
+        self.assertEqual(result["redirect_to"], "http://test.local/order-success?order_id=SO-TEST-0001")
+        self.assertEqual(order_doc.get("webshop_payment_mode"), "PREPAID")
+        make_payment_request.assert_not_called()
+
+    def test_make_payment_request_is_blocked_when_payment_section_is_disabled(self):
+        settings = SimpleNamespace(hide_shipping_on_webshop=0, hide_payment_on_webshop=1)
+
+        with patch("catalog_extensions.simple_checkout._get_settings", return_value=settings):
+            with self.assertRaises(frappe.ValidationError) as exc:
+                simple_checkout.make_payment_request(order_type="Shopping Cart", dt="Sales Order", dn="SO-TEST-0001")
+
+        self.assertIn("Payment is disabled for this checkout flow", str(exc.exception))
+
+    def test_make_payment_request_is_blocked_for_cod_orders(self):
+        settings = SimpleNamespace(hide_shipping_on_webshop=0, hide_payment_on_webshop=0)
+        cod_order = DummyOrder(webshop_payment_mode="COD")
+
+        with (
+            patch("catalog_extensions.simple_checkout._get_settings", return_value=settings),
+            patch("catalog_extensions.simple_checkout.frappe.get_doc", return_value=cod_order),
+        ):
+            with self.assertRaises(frappe.ValidationError) as exc:
+                simple_checkout.make_payment_request(order_type="Shopping Cart", dt="Sales Order", dn="SO-TEST-0001")
+
+        self.assertIn("Cash on Delivery", str(exc.exception))
+
+    def test_portal_flow_visibility_tracks_payment_shipping_and_cancel_settings(self):
+        settings = SimpleNamespace(
+            hide_shipping_on_webshop=1,
+            hide_payment_on_webshop=1,
+            enable_cancel_order=0,
+        )
+
+        with (
+            patch("catalog_extensions.api.get_simple_checkout_settings", return_value=settings),
+        ):
+            visibility = api._get_portal_flow_visibility()
+
+        self.assertFalse(visibility["shipping_active"])
+        self.assertFalse(visibility["payment_active"])
+        self.assertFalse(visibility["return_active"])
+        self.assertFalse(visibility["show_shipment_traceability"])
+        self.assertFalse(visibility["show_payment_traceability"])
+        self.assertFalse(visibility["show_return_traceability"])
+        self.assertFalse(visibility["cancel_active"])
+
+    def test_portal_flow_visibility_disables_payment_actions_for_cod_orders(self):
+        settings = SimpleNamespace(
+            hide_shipping_on_webshop=0,
+            hide_payment_on_webshop=0,
+            enable_cancel_order=1,
+        )
+
+        with patch("catalog_extensions.api.get_simple_checkout_settings", return_value=settings):
+            visibility = api._get_portal_flow_visibility(DummyOrder(webshop_payment_mode="COD"))
+
+        self.assertFalse(visibility["payment_active"])
+        self.assertFalse(visibility["show_payment_traceability"])
+
+    def test_cod_orders_are_ready_for_fulfillment_without_advance_payment(self):
+        cod_order = DummyOrder(webshop_payment_mode="COD", advance_paid=0, base_grand_total=100)
+        self.assertTrue(order_fulfillment.is_order_ready_for_fulfillment(cod_order))
+
+    def test_shipment_defaults_copy_cod_fields_from_order(self):
+        order_doc = DummyOrder(webshop_payment_mode="COD", grand_total=275, base_grand_total=275)
+        shipment_doc = DummyShipment(shipment_parcel=[])
+        delivery_note = DummyOrder(doctype="Delivery Note", name="DN-TEST-0009")
+
+        order_fulfillment._ensure_shipment_defaults(shipment_doc, order_doc, delivery_note)
+
+        self.assertEqual(shipment_doc.get("payment_type"), "COD")
+        self.assertEqual(shipment_doc.get("is_cod"), 1)
+        self.assertEqual(shipment_doc.get("cod_amount"), 275)
+        self.assertEqual(shipment_doc.get("webshop_payment_mode"), "COD")
+
+    def test_order_actions_hide_shipping_and_payment_actions_when_flows_are_disabled(self):
+        context = {
+            "order_doc": DummyOrder(),
+            "flow_visibility": {
+                "payment_active": False,
+                "shipping_active": False,
+                "return_active": False,
+                "cancel_active": True,
+                "show_shipment_traceability": False,
+                "show_return_traceability": False,
+                "show_payment_traceability": False,
+            },
+            "delivery_notes": [],
+            "shipments": [],
+            "invoices": [],
+            "payment_requests": [],
+            "return_delivery_notes": [],
+            "draft_return_delivery_notes": [],
+            "return_shipments": [],
+            "return_records": [],
+            "return_invoices": [],
+            "draft_return_invoices": [],
+            "eligible_return_items": [],
+        }
+
+        with patch("catalog_extensions.api._build_status_signals", return_value={"eligible_return_items_count": 0}):
+            actions = api._get_order_actions(context)
+
+        self.assertFalse(actions["show_shipping_actions"])
+        self.assertFalse(actions["show_payment_actions"])
+        self.assertTrue(actions["show_cancel_actions"])

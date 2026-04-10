@@ -2,6 +2,16 @@
 
 Zero-human-intervention deployment scripts for the `catalog_extensions` Frappe app.
 
+Core required apps on the target site:
+- `erpnext`
+- `payments`
+- `webshop`
+
+Optional enhancement app:
+- `erpnext_shipping_extended`
+
+If the optional app is missing, deployment still succeeds. Shipping-rate lookup, pickup automation, and reverse-pickup creation stay in manual mode.
+
 ## Quick Start
 
 ### One-Command Full Deployment
@@ -29,14 +39,14 @@ bash apps/catalog_extensions/deploy/full_deploy.sh --site yoursite.local --skip-
 
 **What it does:**
 1. ✅ Checks prerequisites (bench directory, site exists)
-2. ✅ Installs the `catalog_extensions` app
-3. ✅ Runs migration to create DocTypes
-4. ✅ Creates `Catalog Price Range` DocType
-5. ✅ Creates default price ranges (optional)
-6. ✅ Creates custom fields (Item, Website Item)
+2. ✅ Fails fast if mandatory apps are missing on the target site
+3. ✅ Installs the `catalog_extensions` app
+4. ✅ Runs migration to create DocTypes
+5. ✅ Creates or updates setup DocTypes and default records
+6. ✅ Creates or updates required custom fields and indexes
 7. ✅ Clears cache
 8. ✅ Restarts bench (optional)
-9. ✅ Verifies installation
+9. ✅ Verifies setup completion and reports optional integration warnings
 
 ---
 
@@ -105,14 +115,19 @@ python3 apps/catalog_extensions/deploy/setup_custom_fields.py --site yoursite.lo
 Before running deployment scripts, ensure:
 
 1. **Frappe Bench** is installed and configured
-2. **Dependencies are installed:**
+2. **Mandatory dependencies are installed on the target site:**
    ```bash
    bench get-app payments
    bench get-app erpnext
    bench get-app webshop
    bench --site yoursite.local install-app webshop
    ```
-3. **This app is in `apps/catalog_extensions/`**
+3. **Optional shipping enhancement app (only if you want automated shipping features):**
+   ```bash
+   bench get-app erpnext_shipping_extended
+   bench --site yoursite.local install-app erpnext_shipping_extended
+   ```
+4. **This app is in `apps/catalog_extensions/`**
 
 ---
 
@@ -122,7 +137,7 @@ Before running deployment scripts, ensure:
 ```bash
 cd /path/to/bench
 
-# 1. Install dependencies
+# 1. Install mandatory dependencies
 bench get-app payments
 bench get-app erpnext  
 bench get-app webshop
@@ -130,10 +145,16 @@ bench get-app webshop
 # 2. Create site (if needed)
 bench new-site newsite.local
 
-# 3. Install webshop
+# 3. Install mandatory site apps
+bench --site newsite.local install-app erpnext
+bench --site newsite.local install-app payments
 bench --site newsite.local install-app webshop
 
-# 4. Deploy catalog_extensions (ONE COMMAND!)
+# 4. Optional: install automated shipping enhancement
+# bench get-app erpnext_shipping_extended
+# bench --site newsite.local install-app erpnext_shipping_extended
+
+# 5. Deploy catalog_extensions (ONE COMMAND!)
 bash apps/catalog_extensions/deploy/full_deploy.sh --site newsite.local --restart
 ```
 
@@ -190,10 +211,18 @@ Make sure you're running the script from the bench root directory (where `sites/
 ### "App not found"
 The app must be cloned/linked to `apps/catalog_extensions/` before running deployment.
 
-### "DocType creation failed"
-Check that migration ran successfully:
+### "Required app is missing"
+Install the missing core app on the target site first:
 ```bash
-bench --site yoursite.local migrate
+bench get-app <app_name>
+bench --site yoursite.local install-app <app_name>
+```
+
+### "Optional app warning"
+This is non-fatal. It means shipping-related automation will stay manual until you install:
+```bash
+bench get-app erpnext_shipping_extended
+bench --site yoursite.local install-app erpnext_shipping_extended
 ```
 
 ### "Custom fields not appearing"
@@ -221,6 +250,8 @@ After successful deployment, configure in Desk:
 3. **Webshop Settings:**
    - Configure price list in Webshop Settings
    - Ensure Website Items are published
+4. **Optional shipping automation:**
+   - Install `erpnext_shipping_extended` only if you want automated shipping-rate and reverse-pickup features
 
 ---
 

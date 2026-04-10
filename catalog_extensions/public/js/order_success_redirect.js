@@ -30,11 +30,26 @@ frappe.ready(function() {
 
 	function placeOrderAndRedirect(button) {
 		cartApi.freeze();
+		var paymentMode = "PREPAID";
+		var checkoutFlags = window.checkoutFlags || {};
+		if (checkoutFlags.selected_payment_mode) {
+			paymentMode = checkoutFlags.selected_payment_mode;
+		}
+		if (checkoutFlags.hide_payment_on_webshop) {
+			paymentMode = null;
+		}
+		var selector = document.getElementById("ce-payment-mode-input");
+		if (!checkoutFlags.hide_payment_on_webshop && selector && selector.value) {
+			paymentMode = selector.value;
+		}
 
 		return frappe.call({
 			type: "POST",
 			method: "webshop.webshop.shopping_cart.cart.place_order",
 			btn: button,
+			args: {
+				payment_mode: paymentMode,
+			},
 			callback: function(r) {
 				if (r.exc) {
 					showCartError(r, button);
@@ -49,7 +64,9 @@ frappe.ready(function() {
 				} else if (payload.redirect_to) {
 					redirectTo = payload.redirect_to;
 				} else if (payload.order_id) {
-					redirectTo = "/order-success?order_id=" + encodeURIComponent(payload.order_id);
+					redirectTo = payload.payment_required
+						? (payload.order_redirect || ("/orders/" + encodeURIComponent(payload.order_id)))
+						: "/order-success?order_id=" + encodeURIComponent(payload.order_id);
 				}
 
 				if (!redirectTo) {

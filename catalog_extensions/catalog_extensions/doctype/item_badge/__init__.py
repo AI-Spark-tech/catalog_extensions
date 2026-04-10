@@ -1,0 +1,2 @@
+"""Item Badge DocType package."""
+

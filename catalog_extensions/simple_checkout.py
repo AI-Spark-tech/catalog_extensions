@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import frappe
 from frappe.utils import get_url
 
@@ -11,22 +13,35 @@ from catalog_extensions.stock_guard import enrich_cart_item
 from webshop.webshop.shopping_cart import cart as core_cart
 from webshop.webshop.doctype.webshop_settings.webshop_settings import get_shopping_cart_settings
 
+PAYMENT_MODE_PREPAID = "PREPAID"
+PAYMENT_MODE_COD = "COD"
+PAYMENT_MODE_OPTIONS = (PAYMENT_MODE_PREPAID, PAYMENT_MODE_COD)
+
+
+def get_payment_mode_for_doc(doc) -> str:
+	"""Return the effective webshop payment mode for a sales document."""
+	mode = ""
+	if doc:
+		mode = getattr(doc, "webshop_payment_mode", "") or doc.get("webshop_payment_mode")
+	mode = str(mode or "").strip().upper()
+	return mode if mode in PAYMENT_MODE_OPTIONS else PAYMENT_MODE_PREPAID
+
 
 def is_simple_checkout_enabled() -> bool:
-	"""Return whether custom simple checkout is enabled for this site."""
+	"""Return whether checkout overrides are active for this site."""
 	settings = _get_settings()
-	return bool(settings and getattr(settings, "enable_simple_checkout", 0))
+	return _requires_checkout_overrides(settings)
 
 
 def _is_simple_checkout_active(settings=None) -> bool:
-	"""Return whether catalog_extensions should apply custom checkout behavior."""
+	"""Return whether catalog_extensions should apply checkout overrides."""
 	if settings is None:
 		settings = _get_settings()
-	return bool(settings and getattr(settings, "enable_simple_checkout", 0))
+	return _requires_checkout_overrides(settings)
 
 
 def _get_settings():
-	"""Fetch simple checkout settings if the doctype exists.
+	"""Fetch webshop checkout settings if the doctype exists.
 
 	Returns None if the doctype/record is missing so that core behaviour is preserved.
 	"""
@@ -36,6 +51,109 @@ def _get_settings():
 	except (frappe.DoesNotExistError, frappe.PermissionError):
 		# Settings not configured; behave like core
 		return None
+
+
+def _is_shipping_section_disabled(settings=None) -> bool:
+	if settings is None:
+		settings = _get_settings()
+	return bool(settings and getattr(settings, "hide_shipping_on_webshop", 0))
+
+
+def _is_payment_section_disabled(settings=None) -> bool:
+	if settings is None:
+		settings = _get_settings()
+	return bool(settings and getattr(settings, "hide_payment_on_webshop", 0))
+
+
+def _requires_checkout_overrides(settings=None) -> bool:
+	return _is_shipping_section_disabled(settings) or _is_payment_section_disabled(settings)
+
+
+def _get_enabled_payment_modes(settings=None) -> list[str]:
+	settings = settings or _get_settings()
+	if _is_payment_section_disabled(settings):
+		return []
+	enable_prepaid = True if not settings else bool(getattr(settings, "enable_prepaid", 1))
+	enable_cod = bool(settings and getattr(settings, "enable_cod", 0))
+
+	modes = []
+	if enable_prepaid:
+		modes.append(PAYMENT_MODE_PREPAID)
+	if enable_cod:
+		modes.append(PAYMENT_MODE_COD)
+
+	return modes or [PAYMENT_MODE_PREPAID]
+
+
+def _get_default_payment_mode(settings=None, enabled_modes=None) -> str:
+	settings = settings or _get_settings()
+	enabled_modes = enabled_modes or _get_enabled_payment_modes(settings)
+	if not enabled_modes:
+		return PAYMENT_MODE_PREPAID
+	default_mode = str(getattr(settings, "default_payment_mode", "") or "").strip().upper()
+	if default_mode in enabled_modes:
+		return default_mode
+	if PAYMENT_MODE_PREPAID in enabled_modes:
+		return PAYMENT_MODE_PREPAID
+	return enabled_modes[0]
+
+
+def _set_checkout_payment_mode(doc, payment_mode: str) -> str:
+	payment_mode = str(payment_mode or "").strip().upper()
+	if payment_mode not in PAYMENT_MODE_OPTIONS:
+		payment_mode = PAYMENT_MODE_PREPAID
+
+	setattr(doc, "webshop_payment_mode", payment_mode)
+	if hasattr(doc, "_values") and isinstance(getattr(doc, "_values"), dict):
+		doc._values["webshop_payment_mode"] = payment_mode
+	return payment_mode
+
+
+def _persist_checkout_payment_mode(doc, payment_mode: str) -> str:
+	payment_mode = _set_checkout_payment_mode(doc, payment_mode)
+	docname = getattr(doc, "name", None) or (doc.get("name") if doc else None)
+	doctype = getattr(doc, "doctype", None) or (doc.get("doctype") if doc else None)
+	if not docname or not doctype:
+		return payment_mode
+
+	if hasattr(doc, "db_set"):
+		doc.db_set("webshop_payment_mode", payment_mode, update_modified=False)
+	else:
+		frappe.db.set_value(doctype, docname, "webshop_payment_mode", payment_mode, update_modified=False)
+
+	return payment_mode
+
+
+@contextmanager
+def _run_as(user: str):
+	session = getattr(frappe, "session", None)
+	previous_user = getattr(session, "user", None)
+	if previous_user is None and isinstance(session, dict):
+		previous_user = session.get("user")
+	previous_user = previous_user or "Guest"
+	frappe.set_user(user)
+	try:
+		yield
+	finally:
+		frappe.set_user(previous_user)
+
+
+def _resolve_checkout_payment_mode(quotation=None, settings=None, requested_mode=None) -> str:
+	settings = settings or _get_settings()
+	if _is_payment_section_disabled(settings):
+		return PAYMENT_MODE_PREPAID
+	enabled_modes = _get_enabled_payment_modes(settings)
+
+	for candidate in (
+		requested_mode,
+		get_payment_mode_for_doc(quotation) if quotation else "",
+		_get_default_payment_mode(settings, enabled_modes),
+	):
+		mode = str(candidate or "").strip().upper()
+		if mode in enabled_modes:
+			return mode
+
+	return enabled_modes[0]
 
 
 def _ensure_defaults_on_quotation(quotation, settings):
@@ -87,8 +205,10 @@ def _ensure_defaults_on_quotation(quotation, settings):
 
 		return core_cart.get_address_docs(party=party)
 
-	# 1) Ensure a default address so core validations pass.
-	if not (getattr(quotation, "shipping_address_name", None) or getattr(quotation, "customer_address", None)):
+	# 1) Ensure a default address only when shipping has been explicitly disabled.
+	if _is_shipping_section_disabled(settings) and not (
+		getattr(quotation, "shipping_address_name", None) or getattr(quotation, "customer_address", None)
+	):
 		party = core_cart.get_party()
 		address_docs = _ensure_minimal_address(party)
 
@@ -101,7 +221,7 @@ def _ensure_defaults_on_quotation(quotation, settings):
 				None,
 			)
 
-		# Fallback: first address of any type
+		# Fallback: first address returned by core ordering.
 		if not chosen_doc and address_docs:
 			chosen_doc = address_docs[0]
 
@@ -116,8 +236,14 @@ def _ensure_defaults_on_quotation(quotation, settings):
 			quotation.flags.ignore_permissions = True
 			quotation.save()
 
-	# 2) Ensure default payment terms template is set on the quotation
-	if getattr(settings, "default_payment_term_template", None) and not getattr(quotation, "payment_terms_template", None):
+	# 2) Ensure default payment terms only when payment has been explicitly disabled.
+	payment_mode = get_payment_mode_for_doc(quotation)
+	if (
+		payment_mode != PAYMENT_MODE_COD
+		and _is_payment_section_disabled(settings)
+		and getattr(settings, "default_payment_term_template", None)
+		and not getattr(quotation, "payment_terms_template", None)
+	):
 		quotation.payment_terms_template = settings.default_payment_term_template
 		quotation.flags.ignore_permissions = True
 		quotation.save()
@@ -218,10 +344,9 @@ def _expire_stale_payment_requests(quotation):
 
 def _get_checkout_quotation(settings=None):
 	quotation = core_cart._get_cart_quotation()
-	if settings and _is_simple_checkout_active(settings):
-		_ensure_defaults_on_quotation(quotation, settings)
-	quotation = _expire_stale_payment_requests(quotation)
-	if settings and _is_simple_checkout_active(settings):
+	if settings:
+		_set_checkout_payment_mode(quotation, _resolve_checkout_payment_mode(quotation, settings))
+	if settings and _requires_checkout_overrides(settings):
 		_ensure_defaults_on_quotation(quotation, settings)
 	return quotation
 
@@ -235,60 +360,6 @@ def _validate_checkout_readiness(quotation):
 
 	if not quotation.company:
 		quotation.company = frappe.db.get_single_value("Webshop Settings", "company")
-
-
-def _get_quotation_payment_amount(quotation):
-	grand_total = quotation.get("rounded_total") or quotation.get("grand_total") or 0
-	return frappe.utils.flt(grand_total)
-
-
-def _build_payment_request_for_quotation(quotation):
-	args = frappe._dict(
-		{
-			"company": quotation.company,
-			"order_type": "Shopping Cart",
-			"party_type": "Customer",
-			"party": quotation.party_name,
-			"party_name": quotation.customer_name,
-			"recipient_id": quotation.contact_email or frappe.session.user,
-			"mode_of_payment": None,
-		}
-	)
-	gateway_account = core_get_gateway_details(args) or frappe._dict()
-	grand_total = _get_quotation_payment_amount(quotation)
-	if not grand_total:
-		frappe.throw(frappe._("Unable to start payment for an empty checkout."))
-
-	pr = frappe.new_doc("Payment Request")
-	party_account_currency = quotation.get("party_account_currency") or quotation.get("currency")
-	pr.update(
-		{
-			"payment_gateway_account": gateway_account.get("name"),
-			"payment_gateway": gateway_account.get("payment_gateway"),
-			"payment_account": gateway_account.get("payment_account"),
-			"payment_channel": gateway_account.get("payment_channel"),
-			"payment_request_type": "Inward",
-			"currency": quotation.currency,
-			"party_account_currency": party_account_currency,
-			"grand_total": grand_total,
-			"outstanding_amount": grand_total,
-			"mode_of_payment": None,
-			"email_to": quotation.contact_email or frappe.session.user,
-			"subject": frappe._("Payment Request for {0}").format(quotation.name),
-			"message": gateway_account.get("message") or quotation.name,
-			"reference_doctype": "Quotation",
-			"reference_name": quotation.name,
-			"company": quotation.company,
-			"party_type": "Customer",
-			"party": quotation.party_name,
-			"party_name": quotation.customer_name,
-			"mute_email": 1,
-		}
-	)
-	pr.flags.ignore_permissions = True
-	pr.insert(ignore_permissions=True)
-	pr.submit()
-	return pr
 
 
 def decorate_quotation_doc(doc):
@@ -346,14 +417,14 @@ def decorate_quotation_doc(doc):
 def get_cart_quotation(doc=None):
 	"""Thin wrapper around core get_cart_quotation.
 
-	When simple checkout is enabled, ensure defaults are applied, then
+	When checkout overrides are active, ensure defaults are applied, then
 	delegate back to core for all heavy logic. Image sync is handled by
 	our decorate_quotation_doc override.
 	"""
 	settings = _get_settings()
 
 	# If settings are missing or feature is disabled, just delegate to core
-	if not _is_simple_checkout_active(settings):
+	if not _requires_checkout_overrides(settings):
 		return core_cart.get_cart_quotation(doc)
 
 	# When enabled, ensure defaults and then delegate to core.
@@ -372,62 +443,154 @@ def get_cart_quotation(doc=None):
 
 @frappe.whitelist(allow_guest=True)
 def get_simple_checkout_flags():
-	"""Expose simple checkout visibility flags for webshop JS.
+	"""Expose webshop checkout visibility flags for frontend JS.
 
 	If settings are missing, this returns all False so UI behaves as core.
 	"""
 	settings = _get_settings()
+	shipping_hidden = _is_shipping_section_disabled(settings)
+	payment_hidden = _is_payment_section_disabled(settings)
+	checkout_overrides_active = shipping_hidden or payment_hidden
+	enabled_modes = _get_enabled_payment_modes(settings)
+	default_mode = _get_default_payment_mode(settings, enabled_modes)
+	selected_mode = default_mode
 
-	if not _is_simple_checkout_active(settings):
+	try:
+		quotation = core_cart._get_cart_quotation()
+		selected_mode = _resolve_checkout_payment_mode(quotation, settings)
+	except Exception:
+		quotation = None
+
+	effective_enable_prepaid = PAYMENT_MODE_PREPAID in enabled_modes
+	effective_enable_cod = PAYMENT_MODE_COD in enabled_modes
+	show_payment_mode_selector = len(enabled_modes) > 1
+	show_online_payment_ui = selected_mode == PAYMENT_MODE_PREPAID and not payment_hidden and effective_enable_prepaid
+
+	if not checkout_overrides_active:
 		return {
 			"enable_simple_checkout": False,
 			"hide_shipping_on_webshop": False,
 			"hide_payment_on_webshop": False,
+			"enable_cancel_order": False,
+			"enable_prepaid": effective_enable_prepaid,
+			"enable_cod": effective_enable_cod,
+			"default_payment_mode": default_mode,
+			"selected_payment_mode": selected_mode,
+			"show_payment_mode_selector": show_payment_mode_selector,
+			"show_online_payment_ui": show_online_payment_ui,
 		}
 
 	return {
 		"enable_simple_checkout": True,
-		"hide_shipping_on_webshop": bool(getattr(settings, "hide_shipping_on_webshop", 0)),
-		"hide_payment_on_webshop": bool(getattr(settings, "hide_payment_on_webshop", 0)),
+		"hide_shipping_on_webshop": shipping_hidden,
+		"hide_payment_on_webshop": payment_hidden,
+		"enable_cancel_order": bool(getattr(settings, "enable_cancel_order", 0)),
+		"enable_prepaid": effective_enable_prepaid,
+		"enable_cod": effective_enable_cod,
+		"default_payment_mode": default_mode,
+		"selected_payment_mode": selected_mode,
+		"show_payment_mode_selector": show_payment_mode_selector,
+		"show_online_payment_ui": show_online_payment_ui,
+	}
+
+
+@frappe.whitelist(allow_guest=True)
+def set_checkout_payment_mode(payment_mode: str):
+	"""Persist the selected checkout payment mode on the cart quotation."""
+	settings = _get_settings()
+	quotation = _get_checkout_quotation(settings)
+	selected_mode = _resolve_checkout_payment_mode(quotation, settings, payment_mode)
+	_persist_checkout_payment_mode(quotation, selected_mode)
+	return {
+		"selected_payment_mode": selected_mode,
+		"show_online_payment_ui": selected_mode == PAYMENT_MODE_PREPAID and not _is_payment_section_disabled(settings),
 	}
 
 
 @frappe.whitelist()
-def place_order():
-	"""Run the core webshop checkout flow in deferred-payment mode.
+def place_order(payment_mode: str | None = None):
+	"""Prepare the cart quotation, then delegate order creation to core webshop."""
+	settings = _get_settings()
+	quotation = _get_checkout_quotation(settings)
+	selected_mode = _resolve_checkout_payment_mode(quotation, settings, payment_mode)
+	_persist_checkout_payment_mode(quotation, selected_mode)
 
-	This keeps the cart as a Shopping Cart quotation, starts payment,
-	and creates the Sales Order only after payment authorization.
-	"""
-	quotation = _get_checkout_quotation()
-	_validate_checkout_readiness(quotation)
-	quotation.flags.ignore_permissions = True
-	quotation.save()
+	if not _requires_checkout_overrides(settings):
+		order_name = core_cart.place_order()
+	else:
+		quotation = _get_checkout_quotation(settings)
+		_validate_checkout_readiness(quotation)
+		quotation.company = quotation.company or frappe.db.get_single_value("Webshop Settings", "company")
 
-	existing_order = _get_existing_sales_order_for_quotation(quotation.name)
-	if existing_order:
-		frappe.session["last_order_id"] = existing_order
-		return {
-			"checkout_state": "order_created",
-			"order_id": existing_order,
-			"redirect_to": f"/order-success?order_id={existing_order}",
-		}
+		order_name = core_cart.place_order()
 
-	pr = _build_payment_request_for_quotation(quotation)
-	redirect_to = pr.get_payment_url()
-	frappe.session["pending_checkout_quotation"] = quotation.name
-	frappe.session["pending_payment_request"] = pr.name
-	return {
-		"checkout_state": "payment_pending",
-		"payment_request": pr.name,
-		"redirect_to": redirect_to,
-	}
+	order_doc = frappe.get_doc("Sales Order", order_name)
+	_persist_checkout_payment_mode(order_doc, selected_mode)
+
+	if _is_payment_section_disabled(settings):
+		return _build_checkout_redirect_payload(order_doc, selected_mode, skip_payment_workflow=True)
+
+	if selected_mode == PAYMENT_MODE_COD:
+		from catalog_extensions.order_fulfillment import automate_webshop_order_fulfillment_if_allowed
+
+		with _run_as("Administrator"):
+			order_doc = frappe.get_doc("Sales Order", order_name)
+			automate_webshop_order_fulfillment_if_allowed(order_doc)
+
+	return _build_checkout_redirect_payload(order_doc, selected_mode)
 
 
 def _redirect_to_order(order_id: str):
 	frappe.local.response["type"] = "redirect"
 	frappe.local.response["location"] = get_url(f"/orders/{order_id}")
 	return {"redirect_to": frappe.local.response["location"], "already_paid": True}
+
+
+def _build_checkout_redirect_payload(order_doc, payment_mode: str, skip_payment_workflow: bool = False) -> dict:
+	"""Return the next-step redirect payload for the selected checkout mode."""
+	order_id = getattr(order_doc, "name", None) or order_doc.get("name")
+	order_redirect = get_url(f"/orders/{order_id}")
+
+	if skip_payment_workflow or payment_mode == PAYMENT_MODE_COD:
+		return {
+			"order_id": order_id,
+			"payment_mode": payment_mode,
+			"payment_required": False,
+			"redirect_to": get_url(f"/order-success?order_id={order_id}"),
+			"order_redirect": order_redirect,
+		}
+
+	response = getattr(frappe.local, "response", None)
+	original_type = response.get("type") if isinstance(response, dict) else None
+	original_location = response.get("location") if isinstance(response, dict) else None
+	try:
+		payment_request = core_make_payment_request(
+			dt="Sales Order",
+			dn=order_id,
+			submit_doc=1,
+			order_type="Shopping Cart",
+			company=order_doc.company,
+			return_doc=True,
+		)
+	finally:
+		if isinstance(response, dict):
+			if original_type is None:
+				response.pop("type", None)
+			else:
+				response["type"] = original_type
+
+			if original_location is None:
+				response.pop("location", None)
+			else:
+				response["location"] = original_location
+	return {
+		"order_id": order_id,
+		"payment_mode": payment_mode,
+		"payment_required": True,
+		"redirect_to": payment_request.get_payment_url(),
+		"order_redirect": order_redirect,
+		"payment_request": payment_request.name,
+	}
 
 
 @frappe.whitelist(allow_guest=True)
@@ -446,7 +609,14 @@ def make_payment_request(**args):
 	):
 		return core_make_payment_request(**args)
 
+	settings = _get_settings()
+	if _is_payment_section_disabled(settings):
+		raise frappe.ValidationError(frappe._("Payment is disabled for this checkout flow."))
+
 	ref_doc = args.get("ref_doc") or frappe.get_doc(args.dt, args.dn)
+	if get_payment_mode_for_doc(ref_doc) == PAYMENT_MODE_COD:
+		raise frappe.ValidationError(frappe._("Online payment is disabled for Cash on Delivery orders."))
+
 	if not args.get("company"):
 		args.company = ref_doc.company
 

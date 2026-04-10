@@ -1,9 +1,12 @@
 import json
+import logging
 
 import frappe
 from frappe.utils import nowdate, flt, cint
 
+from catalog_extensions.install_support import is_doctype_available, is_optional_app_installed
 from catalog_extensions import order_billing
+from catalog_extensions.simple_checkout import PAYMENT_MODE_COD, PAYMENT_MODE_PREPAID, get_payment_mode_for_doc
 
 FULFILLMENT_MARKER = "[catalog_extensions_fulfillment]"
 PICKUP_MARKER = "[catalog_extensions_pickup]"
@@ -21,7 +24,10 @@ def _debug_log(message: str, **context) -> None:
     payload = ", ".join(f"{key}={value}" for key, value in context.items() if value not in (None, ""))
     if payload:
         message = f"{message} | {payload}"
-    frappe.logger("catalog_extensions.fulfillment").info(message)
+    try:
+        frappe.logger("catalog_extensions.fulfillment").info(message)
+    except Exception:
+        logging.getLogger("catalog_extensions.fulfillment").info(message)
 
 
 def _has_comment(reference_doctype: str, reference_name: str, marker: str) -> bool:
@@ -55,6 +61,12 @@ def _db_set_if_present(doc, values: dict) -> None:
         setattr(doc, key, value)
 
 
+def _set_doc_value(doc, key: str, value) -> None:
+    setattr(doc, key, value)
+    if hasattr(doc, "_values") and isinstance(getattr(doc, "_values"), dict):
+        doc._values[key] = value
+
+
 def _set_child_value(row, key: str, value) -> None:
     if isinstance(row, dict):
         row[key] = value
@@ -86,6 +98,9 @@ def _get_existing_delivery_note_name(sales_order_name: str) -> str | None:
 
 
 def _get_existing_shipment_name(delivery_note_name: str) -> str | None:
+    if not is_doctype_available("Shipment"):
+        return None
+
     rows = frappe.db.sql(
         """
         SELECT s.name
@@ -160,14 +175,16 @@ def _get_shipment_content_description(order_doc, delivery_note_doc=None) -> str:
 
 
 def _ensure_shipment_defaults(shipment_doc, order_doc, delivery_note_doc=None) -> None:
-    shipment_doc.pickup_type = shipment_doc.get("pickup_type") or "Pickup"
-    shipment_doc.shipment_type = shipment_doc.get("shipment_type") or "Goods"
-    shipment_doc.pallets = shipment_doc.get("pallets") or "No"
-    shipment_doc.pickup_date = shipment_doc.get("pickup_date") or nowdate()
-    shipment_doc.pickup_from = shipment_doc.get("pickup_from") or "09:00:00"
-    shipment_doc.pickup_to = shipment_doc.get("pickup_to") or "18:00:00"
-    shipment_doc.description_of_content = shipment_doc.get("description_of_content") or (
-        _get_shipment_content_description(order_doc, delivery_note_doc)
+    _set_doc_value(shipment_doc, "pickup_type", shipment_doc.get("pickup_type") or "Pickup")
+    _set_doc_value(shipment_doc, "shipment_type", shipment_doc.get("shipment_type") or "Goods")
+    _set_doc_value(shipment_doc, "pallets", shipment_doc.get("pallets") or "No")
+    _set_doc_value(shipment_doc, "pickup_date", shipment_doc.get("pickup_date") or nowdate())
+    _set_doc_value(shipment_doc, "pickup_from", shipment_doc.get("pickup_from") or "09:00:00")
+    _set_doc_value(shipment_doc, "pickup_to", shipment_doc.get("pickup_to") or "18:00:00")
+    _set_doc_value(
+        shipment_doc,
+        "description_of_content",
+        shipment_doc.get("description_of_content") or _get_shipment_content_description(order_doc, delivery_note_doc),
     )
     shipment_parcels = list(shipment_doc.get("shipment_parcel") or [])
     if not shipment_parcels:
@@ -178,6 +195,31 @@ def _ensure_shipment_defaults(shipment_doc, order_doc, delivery_note_doc=None) -
         for key, default_value in DEFAULT_PARCEL.items():
             if not _get_child_value(row, key):
                 _set_child_value(row, key, default_value)
+
+    payment_mode = get_payment_mode_for_doc(order_doc)
+    if payment_mode == PAYMENT_MODE_COD:
+        cod_amount = flt(order_doc.get("rounded_total") or order_doc.get("grand_total") or order_doc.get("base_grand_total") or 0)
+        for key, value in (
+            ("payment_type", "COD"),
+            ("is_cod", 1),
+            ("cod_amount", cod_amount),
+            ("webshop_payment_mode", PAYMENT_MODE_COD),
+        ):
+            try:
+                _set_doc_value(shipment_doc, key, value)
+            except Exception:
+                continue
+    else:
+        for key, value in (
+            ("payment_type", "Prepaid"),
+            ("is_cod", 0),
+            ("cod_amount", 0),
+            ("webshop_payment_mode", PAYMENT_MODE_PREPAID),
+        ):
+            try:
+                _set_doc_value(shipment_doc, key, value)
+            except Exception:
+                continue
 
 
 def apply_webshop_shipment_defaults(doc, method=None) -> None:
@@ -268,6 +310,13 @@ def _is_fully_paid_prepaid_order(order_doc) -> bool:
     return flt(order_doc.get("advance_paid") or 0) >= (order_total - 0.01)
 
 
+def is_order_ready_for_fulfillment(order_doc) -> bool:
+    payment_mode = get_payment_mode_for_doc(order_doc)
+    if payment_mode == PAYMENT_MODE_COD:
+        return True
+    return _is_fully_paid_prepaid_order(order_doc)
+
+
 def _is_shipment_delivered(shipment_doc) -> bool:
     normalized = str(shipment_doc.get("normalized_tracking_status") or "").strip().upper()
     tracking_status = str(shipment_doc.get("tracking_status") or "").strip().lower()
@@ -281,6 +330,9 @@ def _is_shipment_delivered(shipment_doc) -> bool:
 
 
 def _all_shipments_delivered_for_sales_order(sales_order_name: str) -> bool:
+    if not is_doctype_available("Shipment"):
+        return False
+
     rows = frappe.db.sql(
         """
         SELECT DISTINCT
@@ -303,6 +355,9 @@ def _all_shipments_delivered_for_sales_order(sales_order_name: str) -> bool:
 
 
 def _get_best_service_info(shipment_doc):
+    if not is_optional_app_installed("erpnext_shipping_extended"):
+        return None
+
     try:
         from erpnext_shipping_extended.api.shipping_extended import fetch_shipping_rates
     except Exception:
@@ -332,6 +387,9 @@ def _get_best_service_info(shipment_doc):
 
 
 def _queue_dispatch(shipment_doc, service_info) -> dict | None:
+    if not is_optional_app_installed("erpnext_shipping_extended"):
+        return None
+
     try:
         from erpnext_shipping_extended.api.shipping_extended import create_shipment
     except Exception:
@@ -456,6 +514,15 @@ def attempt_pickup_after_dispatch(shipment_name: str, sales_order_name: str | No
         )
         return
 
+    if not is_optional_app_installed("erpnext_shipping_extended"):
+        target = order_doc or shipment_doc
+        _add_comment_once(
+            target,
+            PICKUP_MARKER,
+            f"Pickup auto-scheduling is unavailable for Shipment {shipment_doc.name} because optional app erpnext_shipping_extended is not installed.",
+        )
+        return
+
     try:
         from erpnext_shipping_extended.services.pickups import create_pickup_request
 
@@ -492,6 +559,14 @@ def automate_shipment_for_delivery_note(order_doc, delivery_note_doc) -> dict:
         "dispatch_queued": False,
         "pickup_queued": False,
     }
+
+    if not is_doctype_available("Shipment"):
+        _add_comment_once(
+            order_doc,
+            FULFILLMENT_MARKER,
+            f"Shipment automation was skipped for Delivery Note {delivery_note_doc.name} because Shipment DocType is not available on this bench.",
+        )
+        return result
 
     shipment_doc, shipment_created = _get_shipment_doc(order_doc, delivery_note_doc)
     result["shipment"] = shipment_doc.name
@@ -569,6 +644,25 @@ def automate_paid_webshop_order_fulfillment(order_doc) -> dict:
     shipment_result = automate_shipment_for_delivery_note(order_doc, delivery_note_doc)
     result.update({key: value for key, value in shipment_result.items() if key != "delivery_note_created"})
     return result
+
+
+def automate_webshop_order_fulfillment_if_allowed(order_doc) -> dict:
+    if not is_order_ready_for_fulfillment(order_doc):
+        _debug_log(
+            "Skipping webshop fulfillment because payment policy is not yet satisfied",
+            sales_order=order_doc.name,
+            payment_mode=get_payment_mode_for_doc(order_doc),
+        )
+        return {
+            "delivery_note": None,
+            "shipment": None,
+            "delivery_note_created": False,
+            "shipment_created": False,
+            "dispatch_queued": False,
+            "pickup_queued": False,
+            "skipped": True,
+        }
+    return automate_paid_webshop_order_fulfillment(order_doc)
 
 
 def _get_sales_order_name_for_delivery_note(delivery_note_doc) -> str | None:

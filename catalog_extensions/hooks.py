@@ -4,6 +4,7 @@ app_publisher = "HaramiHost"
 app_description = "Custom catalog features and extensions"
 app_email = "support@example.com"
 app_license = "MIT"
+required_apps = ["erpnext", "payments", "webshop"]
 
 # Installation hooks: ensure required DocTypes and custom fields exist
 after_install = "catalog_extensions.install.after_install"
@@ -103,8 +104,6 @@ doc_events = {
 
 # Apps
 # ------------------
-
-# required_apps = []
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [

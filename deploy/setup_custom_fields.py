@@ -38,7 +38,32 @@ def create_custom_field(frappe, doctype: str, field_config: dict) -> bool:
     fieldname = field_config.get("fieldname")
     existing = frappe.db.exists("Custom Field", {"dt": doctype, "fieldname": fieldname})
     if existing:
-        print(f"[INFO] Field '{doctype}.{fieldname}' already exists")
+        field_doc = frappe.get_doc("Custom Field", existing)
+        fields_changed = False
+        for key in (
+            "label",
+            "fieldtype",
+            "options",
+            "insert_after",
+            "reqd",
+            "default",
+            "description",
+            "depends_on",
+            "read_only",
+            "hidden",
+            "print_hide",
+        ):
+            target_value = field_config.get(key, "" if key in ("options", "default", "description", "depends_on") else 0)
+            if getattr(field_doc, key, None) != target_value:
+                setattr(field_doc, key, target_value)
+                fields_changed = True
+
+        if fields_changed:
+            field_doc.save(ignore_permissions=True)
+            frappe.db.commit()
+            print(f"[SUCCESS] Updated field '{doctype}.{fieldname}'")
+        else:
+            print(f"[INFO] Field '{doctype}.{fieldname}' already exists")
         return True
 
     try:
@@ -69,6 +94,56 @@ def create_custom_field(frappe, doctype: str, field_config: dict) -> bool:
     except Exception as e:
         print(f"[ERROR] Failed to create field '{doctype}.{fieldname}': {e}")
         return False
+
+
+def repair_legacy_website_item_filter_fields(frappe) -> bool:
+    """Repair legacy invalid fieldtypes before DocType validation runs.
+
+    Older installs created these fields as Table MultiSelect, which Frappe
+    rejects for Website Offer / Item Badge. Update them in SQL first so later
+    Custom Field saves can validate Website Item successfully.
+    """
+
+    print("[STEP] Repairing legacy Website Item filter fields if needed...")
+
+    repairs = (
+        ("filterable_offers", "Table", "Website Offer"),
+        ("filterable_badges", "Table", "Item Badge"),
+    )
+
+    changed = False
+    for fieldname, fieldtype, options in repairs:
+        existing_name = frappe.db.exists("Custom Field", {"dt": "Website Item", "fieldname": fieldname})
+        if not existing_name:
+            continue
+
+        row = frappe.db.get_value(
+            "Custom Field",
+            existing_name,
+            ["fieldtype", "options"],
+            as_dict=True,
+        )
+        if not row:
+            continue
+
+        if row.fieldtype == fieldtype and row.options == options:
+            continue
+
+        frappe.db.sql(
+            """
+            UPDATE `tabCustom Field`
+            SET fieldtype = %s, options = %s
+            WHERE name = %s
+            """,
+            (fieldtype, options, existing_name),
+        )
+        changed = True
+        print(f"[SUCCESS] Repaired legacy field 'Website Item.{fieldname}'")
+
+    if changed:
+        frappe.db.commit()
+
+    return True
 
 
 def setup_item_fields(frappe) -> bool:
@@ -105,6 +180,7 @@ def setup_website_item_fields(frappe) -> bool:
     """Create custom fields on Website Item DocType."""
 
     print("[STEP] Setting up Website Item custom fields...")
+    repair_legacy_website_item_filter_fields(frappe)
 
     fields = [
         {
@@ -127,7 +203,7 @@ def setup_website_item_fields(frappe) -> bool:
         {
             "fieldname": "filterable_offers",
             "label": "Filterable Offers",
-            "fieldtype": "Table MultiSelect",
+            "fieldtype": "Table",
             "options": "Website Offer",
             "insert_after": "offers",
             "hidden": 1,
@@ -136,7 +212,7 @@ def setup_website_item_fields(frappe) -> bool:
         {
             "fieldname": "filterable_badges",
             "label": "Filterable Badges",
-            "fieldtype": "Table MultiSelect",
+            "fieldtype": "Table",
             "options": "Item Badge",
             "insert_after": "filterable_offers",
             "hidden": 1,
@@ -151,6 +227,70 @@ def setup_website_item_fields(frappe) -> bool:
     return ok
 
 
+def setup_checkout_mode_fields(frappe) -> bool:
+    """Create payment-mode fields on checkout-related sales documents."""
+
+    print("[STEP] Setting up checkout mode custom fields...")
+
+    fields_by_doctype = {
+        "Quotation": [
+            {
+                "fieldname": "webshop_payment_mode",
+                "label": "Webshop Payment Mode",
+                "fieldtype": "Select",
+                "options": "PREPAID\nCOD",
+                "insert_after": "payment_terms_template",
+                "default": "PREPAID",
+                "read_only": 1,
+                "description": "Payment mode selected by the customer during webshop checkout.",
+            }
+        ],
+        "Sales Order": [
+            {
+                "fieldname": "webshop_payment_mode",
+                "label": "Webshop Payment Mode",
+                "fieldtype": "Select",
+                "options": "PREPAID\nCOD",
+                "insert_after": "payment_terms_template",
+                "default": "PREPAID",
+                "read_only": 1,
+                "description": "Payment mode selected by the customer during webshop checkout.",
+            }
+        ],
+        "Sales Invoice": [
+            {
+                "fieldname": "webshop_payment_mode",
+                "label": "Webshop Payment Mode",
+                "fieldtype": "Select",
+                "options": "PREPAID\nCOD",
+                "insert_after": "payment_terms_template",
+                "default": "PREPAID",
+                "read_only": 1,
+                "description": "Payment mode inherited from the webshop order.",
+            }
+        ],
+        "Shipment": [
+            {
+                "fieldname": "webshop_payment_mode",
+                "label": "Webshop Payment Mode",
+                "fieldtype": "Select",
+                "options": "PREPAID\nCOD",
+                "insert_after": "cod_amount",
+                "default": "PREPAID",
+                "read_only": 1,
+                "description": "Payment mode inherited from the webshop order.",
+            }
+        ],
+    }
+
+    ok = True
+    for doctype, fields in fields_by_doctype.items():
+        for field in fields:
+            if not create_custom_field(frappe, doctype, field):
+                ok = False
+    return ok
+
+
 def sync_item_badge_doctype(frappe) -> bool:
     """Ensure Item Badge child DocType is synced from JSON (non-critical)."""
 
@@ -158,11 +298,10 @@ def sync_item_badge_doctype(frappe) -> bool:
 
     try:
         from frappe.modules.import_file import import_file_by_path
-        from frappe.modules import get_module_path
 
-        module_path = get_module_path("Catalog Extensions")
+        app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         item_badge_json = os.path.join(
-            module_path, "catalog_extensions", "doctype", "item_badge", "item_badge.json"
+            app_root, "catalog_extensions", "doctype", "item_badge", "item_badge.json"
         )
 
         if frappe.db.exists("DocType", "Item Badge"):

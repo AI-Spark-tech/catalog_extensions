@@ -24,8 +24,10 @@ from catalog_extensions.brand_filtering import (
 from catalog_extensions import order_billing
 from catalog_extensions.simple_checkout import (
     _get_settings as get_simple_checkout_settings,
-    is_simple_checkout_enabled,
+    PAYMENT_MODE_COD,
+    get_payment_mode_for_doc,
 )
+from catalog_extensions.install_support import is_doctype_available, is_optional_app_installed
 from catalog_extensions.stock_guard import enrich_product_info
 
 RETURN_WINDOW_DAYS = 7
@@ -43,7 +45,11 @@ PORTAL_RETURN_REQUEST_MARKER = "[catalog_extensions_return_request]"
 
 @contextmanager
 def run_as(user: str):
-    previous_user = frappe.session.user
+    session = getattr(frappe, "session", None)
+    previous_user = getattr(session, "user", None)
+    if previous_user is None and isinstance(session, dict):
+        previous_user = session.get("user")
+    previous_user = previous_user or "Guest"
     frappe.set_user(user)
     try:
         yield
@@ -1721,27 +1727,41 @@ TRACKING_STATUS_NORMALIZATION_MAP = {
 PORTAL_REFUND_REQUEST_MARKER = "[catalog_extensions_refund_request]"
 
 
-def _get_portal_flow_visibility() -> Dict[str, bool]:
+def _get_portal_flow_visibility(order_doc=None) -> Dict[str, bool]:
     """Return which webshop checkout flows should expose customer-facing traceability."""
     settings = get_simple_checkout_settings()
-    simple_checkout_enabled = is_simple_checkout_enabled()
+    shipping_disabled = bool(settings and getattr(settings, "hide_shipping_on_webshop", 0))
+    payment_disabled = bool(settings and getattr(settings, "hide_payment_on_webshop", 0))
+    if order_doc and get_payment_mode_for_doc(order_doc) == PAYMENT_MODE_COD:
+        payment_disabled = True
+    checkout_overrides_active = shipping_disabled or payment_disabled
 
     shipping_active = True
     payment_active = True
+    return_active = True
+    cancel_active = True
+    show_shipment_traceability = True
+    show_payment_traceability = True
+    show_return_traceability = True
 
-    if simple_checkout_enabled:
-        shipping_active = not bool(getattr(settings, "hide_shipping_on_webshop", 0))
-        payment_active = not bool(getattr(settings, "hide_payment_on_webshop", 0))
+    if checkout_overrides_active:
+        shipping_active = not shipping_disabled
+        payment_active = not payment_disabled
+        return_active = not shipping_disabled
+        cancel_active = bool(getattr(settings, "enable_cancel_order", 0))
+        show_shipment_traceability = not shipping_disabled
+        show_return_traceability = not shipping_disabled
+        show_payment_traceability = not payment_disabled
 
     return {
-        "simple_checkout_enabled": simple_checkout_enabled,
+        "simple_checkout_enabled": checkout_overrides_active,
         "shipping_active": shipping_active,
         "payment_active": payment_active,
-        # Reverse logistics traceability follows the shipment flow.
-        "return_active": shipping_active,
-        "show_shipment_traceability": shipping_active,
-        "show_payment_traceability": payment_active,
-        "show_return_traceability": shipping_active,
+        "cancel_active": cancel_active,
+        "return_active": return_active,
+        "show_shipment_traceability": show_shipment_traceability,
+        "show_payment_traceability": show_payment_traceability,
+        "show_return_traceability": show_return_traceability,
     }
 
 
@@ -1908,7 +1928,7 @@ def _get_return_delivery_notes(delivery_note_names: List[str], docstatus: int = 
 def _get_shipments_for_delivery_notes(delivery_note_names: List[str]) -> List[Dict[str, Any]]:
     """Return shipments linked to the provided delivery notes."""
 
-    if not delivery_note_names:
+    if not delivery_note_names or not is_doctype_available("Shipment"):
         return []
 
     shipment_rows = frappe.db.sql(
@@ -1959,7 +1979,7 @@ def _get_shipments_by_names(shipment_names: List[str]) -> List[Dict[str, Any]]:
     """Return shipment rows for the provided Shipment names."""
 
     shipment_names = [name for name in shipment_names if name]
-    if not shipment_names:
+    if not shipment_names or not is_doctype_available("Shipment"):
         return []
 
     rows = frappe.get_all(
@@ -2865,7 +2885,7 @@ def _build_tracking_milestones(context: Dict[str, Any], status_code: str) -> Lis
 
 
 def _build_portal_order_tracking_context(order_doc) -> Dict[str, Any]:
-    flow_visibility = _get_portal_flow_visibility()
+    flow_visibility = _get_portal_flow_visibility(order_doc)
     if order_doc.doctype == "Sales Order":
         delivery_notes = _get_delivery_notes_for_sales_order(order_doc.name)
         invoices = _get_sales_invoices_for_sales_order(order_doc.name)
@@ -3052,6 +3072,10 @@ def _has_fulfillment_started(context: Dict[str, Any]) -> bool:
 
 def _get_cancel_unavailable_reason(context: Dict[str, Any]) -> Optional[str]:
     order_doc = context["order_doc"]
+    flow_visibility = context["flow_visibility"]
+
+    if not flow_visibility.get("cancel_active", True):
+        return "Order cancellation is disabled for this checkout flow."
 
     if order_doc.doctype != "Sales Order":
         return "Cancellation is available only for sales orders."
@@ -3188,16 +3212,21 @@ def _get_order_actions(context: Dict[str, Any], signals: Optional[Dict[str, Any]
     cancel_reason = _get_cancel_unavailable_reason(context)
     return_reason = _get_return_unavailable_reason(context, signals)
     refund_reason = _get_refund_unavailable_reason(context, signals)
+    flow_visibility = context["flow_visibility"]
     return {
-        "can_cancel": not cancel_reason,
+        "can_cancel": bool(flow_visibility.get("cancel_active", True)) and not cancel_reason,
         "cancel_reason": cancel_reason,
         "cancel_label": "Cancel order",
+        "show_cancel_actions": bool(flow_visibility.get("cancel_active", True)),
         "can_return": not return_reason,
         "return_reason": return_reason,
         "return_label": "Return request",
+        "show_shipping_actions": bool(flow_visibility.get("shipping_active", True))
+        and bool(flow_visibility.get("return_active", True)),
         "can_refund": not refund_reason,
         "refund_reason": refund_reason,
         "refund_label": "Request refund",
+        "show_payment_actions": bool(flow_visibility.get("payment_active", True)),
         "return_source_invoice": return_source_invoice.get("name") if return_source_invoice else None,
         "eligible_return_items_count": signals.get("eligible_return_items_count", 0),
     }
@@ -3273,7 +3302,7 @@ def cancel_portal_order(
     context = _build_portal_order_tracking_context(order_doc)
     unavailable_reason = _get_cancel_unavailable_reason(context)
     if unavailable_reason:
-        frappe.throw(frappe._(unavailable_reason))
+        raise frappe.ValidationError(frappe._(unavailable_reason))
 
     order_doc.flags.ignore_permissions = True
     existing_ignored_doctypes = order_doc.get("ignore_linked_doctypes") or ()
@@ -3290,7 +3319,7 @@ def cancel_portal_order(
     try:
         order_doc.cancel()
     except frappe.LinkExistsError:
-        frappe.throw(
+        raise frappe.ValidationError(
             frappe._(
                 "This paid order cannot be cancelled online yet because linked billing or payment records still need staff review."
             )
@@ -3318,7 +3347,6 @@ def create_portal_return_request(
     selected_items: Optional[Any] = None,
 ) -> Dict[str, Any]:
     from erpnext.controllers.sales_and_purchase_return import make_return_doc
-    from erpnext_shipping_extended.api.returns import create_return_shipment
 
     order_doc = _get_portal_order_doc(order_name, order_doctype)
     context = _build_portal_order_tracking_context(order_doc)
@@ -3409,10 +3437,21 @@ def create_portal_return_request(
             outbound_shipment_doc.get("service_provider") == "Shiprocket"
             and outbound_shipment_doc.get("shiprocket_order_id")
         ):
-            reverse_result = create_return_shipment(
-                shipment_name=outbound_shipment["name"],
-                return_reason=reason.strip() if reason else "Customer return request from webshop",
-            )
+            if is_optional_app_installed("erpnext_shipping_extended"):
+                from erpnext_shipping_extended.api.returns import create_return_shipment
+
+                reverse_result = create_return_shipment(
+                    shipment_name=outbound_shipment["name"],
+                    return_reason=reason.strip() if reason else "Customer return request from webshop",
+                )
+            else:
+                manual_follow_up_message = (
+                    f"{PORTAL_RETURN_REQUEST_MARKER} Reverse pickup was not auto-created because "
+                    "optional app erpnext_shipping_extended is not installed on this bench."
+                )
+                return_doc.add_comment("Comment", manual_follow_up_message)
+                order_doc.add_comment("Comment", manual_follow_up_message)
+                reverse_message = "Your return request has been created. Reverse pickup will be arranged manually."
         else:
             manual_follow_up_message = (
                 f"{PORTAL_RETURN_REQUEST_MARKER} Reverse pickup was not auto-created because shipment "

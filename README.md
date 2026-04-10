@@ -8,8 +8,24 @@ You can install this app using the [bench](https://github.com/frappe/bench) CLI:
 
 ```bash
 cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
+bench get-app $URL_OF_THIS_REPO
 bench install-app catalog_extensions
+```
+
+Core required apps on the target site:
+- `erpnext`
+- `payments`
+- `webshop`
+
+Optional enhancement app:
+- `erpnext_shipping_extended`
+
+If the optional app is missing, `catalog_extensions` still installs and works, but automated shipping-rate lookup, pickup automation, and reverse-pickup automation stay in manual mode.
+
+For another-bench deployment, the recommended path is:
+
+```bash
+bash apps/catalog_extensions/deploy/full_deploy.sh --site yoursite.local
 ```
 
 ### Contributing

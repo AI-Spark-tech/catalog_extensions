@@ -1,5 +1,6 @@
 import frappe
 from frappe.utils import flt
+from catalog_extensions.simple_checkout import PAYMENT_MODE_COD, get_payment_mode_for_doc
 
 DELIVERY_COMPLETE_MARKER = "[catalog_extensions_delivery_completed]"
 
@@ -59,7 +60,8 @@ def create_sales_invoice_for_fully_paid_webshop_order(doc, method=None):
     if flt(doc.get("per_delivered")) < 100:
         return
 
-    if not _is_fully_paid_prepaid_order(doc):
+    payment_mode = get_payment_mode_for_doc(doc)
+    if payment_mode != PAYMENT_MODE_COD and not _is_fully_paid_prepaid_order(doc):
         return
 
     if _has_existing_sales_invoice(doc.name):
@@ -68,6 +70,7 @@ def create_sales_invoice_for_fully_paid_webshop_order(doc, method=None):
     from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
 
     sales_invoice = make_sales_invoice(doc.name, ignore_permissions=True)
+    sales_invoice.webshop_payment_mode = payment_mode
     sales_invoice.flags.ignore_permissions = True
     sales_invoice.insert(ignore_permissions=True)
     sales_invoice.submit()

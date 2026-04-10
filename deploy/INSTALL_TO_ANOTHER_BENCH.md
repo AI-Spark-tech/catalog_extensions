@@ -10,8 +10,11 @@ This guide shows you how to deploy `catalog_extensions` to a completely differen
 **On the target bench, you must have:**
 - [ ] Frappe Bench installed and working
 - [ ] Site created (e.g., `catalog2.local`)
-- [ ] Dependencies installed: `payments`, `erpnext`, `webshop`
+- [ ] Mandatory apps installed on the site: `erpnext`, `payments`, `webshop`
 - [ ] SSH/terminal access to the bench server
+
+**Optional app:**
+- [ ] `erpnext_shipping_extended` only if you want automated shipping-rate, pickup, and reverse-pickup features
 
 ---
 
@@ -81,13 +84,19 @@ cd ..
 ```bash
 cd /path/to/target_bench
 
-# Install dependencies first (if not already installed)
+# Install mandatory apps first (if not already installed)
 bench get-app payments
 bench get-app erpnext
 bench get-app webshop
 
-# Install webshop on the site
+# Install mandatory apps on the site
+bench --site catalog2.local install-app erpnext
+bench --site catalog2.local install-app payments
 bench --site catalog2.local install-app webshop
+
+# Optional shipping enhancement
+# bench get-app erpnext_shipping_extended
+# bench --site catalog2.local install-app erpnext_shipping_extended
 
 # Run the automated deployment
 bash apps/catalog_extensions/deploy/full_deploy.sh --site catalog2.local --restart
@@ -208,13 +217,22 @@ Create the site first:
 bench new-site catalog2.local
 ```
 
-### "Webshop not installed"
-Install dependencies in order:
+### "Required app is missing"
+Install the missing mandatory app in order:
 ```bash
 bench get-app payments
 bench get-app erpnext
 bench get-app webshop
+bench --site catalog2.local install-app erpnext
+bench --site catalog2.local install-app payments
 bench --site catalog2.local install-app webshop
+```
+
+### "Optional app warning"
+This is not fatal. It only means shipping automation will stay manual until you install:
+```bash
+bench get-app erpnext_shipping_extended
+bench --site catalog2.local install-app erpnext_shipping_extended
 ```
 
 ### "Permission denied on scripts"
@@ -246,7 +264,7 @@ APP_SOURCE="/path/to/source/catalog_extensions"
 set -e
 cd $BENCH_PATH
 
-# Step 1: Install dependencies
+# Step 1: Install mandatory apps
 bench get-app payments
 bench get-app erpnext
 bench get-app webshop
@@ -256,8 +274,14 @@ if [ ! -d "sites/$SITE_NAME" ]; then
     bench new-site $SITE_NAME
 fi
 
-# Step 3: Install webshop
+# Step 3: Install mandatory site apps
+bench --site $SITE_NAME install-app erpnext || true
+bench --site $SITE_NAME install-app payments || true
 bench --site $SITE_NAME install-app webshop || true
+
+# Optional shipping enhancement
+# bench get-app erpnext_shipping_extended
+# bench --site $SITE_NAME install-app erpnext_shipping_extended || true
 
 # Step 4: Copy app
 cp -r $APP_SOURCE apps/catalog_extensions
